@@ -22,6 +22,7 @@ import com.offgrid.app.ui.emergency.EmergencyScreen
 import com.offgrid.app.ui.home.HomeScreen
 import com.offgrid.app.ui.profile.ProfileScreen
 import com.offgrid.app.ui.settings.DemoSetupScreen
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 sealed class Screen {
@@ -60,6 +61,18 @@ fun OffGridApp(
 
     BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
 
+    fun safeLaunch(block: suspend () -> Unit) {
+        scope.launch {
+            try {
+                block()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // UI actions are isolated: a failed nearby operation must not close OffGrid.
+            }
+        }
+    }
+
     MaterialTheme(colorScheme = OffGridColors) {
         when (val current = screen) {
             is Screen.Home -> HomeScreen(
@@ -71,9 +84,9 @@ fun OffGridApp(
                 onSelectNode = { node -> screen = Screen.Profile(node) },
                 onOpenConversation = { node ->
                     screen = Screen.Chat(node)
-                    scope.launch { transport.connectToDevice(node) }
+                    safeLaunch { transport.connectToDevice(node) }
                 },
-                onDiscover = { scope.launch { transport.discoverDevices() } },
+                onDiscover = { safeLaunch { transport.discoverDevices() } },
                 onEmergency = { screen = Screen.Emergency },
                 onOpenSettings = { screen = Screen.DemoSetup },
             )
@@ -85,7 +98,7 @@ fun OffGridApp(
                     onBack = { screen = Screen.Home },
                     onMessage = {
                         screen = Screen.Chat(liveNode)
-                        scope.launch { transport.connectToDevice(liveNode) }
+                        safeLaunch { transport.connectToDevice(liveNode) }
                     },
                 )
             }
@@ -101,7 +114,7 @@ fun OffGridApp(
                     canSend = canSend,
                     onBack = { screen = Screen.Home },
                     onSend = { text ->
-                        scope.launch {
+                        safeLaunch {
                             val connected = if (transport.linkState.value == LinkState.CONNECTED) {
                                 true
                             } else {
@@ -117,7 +130,7 @@ fun OffGridApp(
                 nodes = nodes,
                 sos = sos,
                 onBack = { screen = Screen.Home },
-                onActivate = { message -> emergency.activate(scope, message) },
+                onActivate = { message -> safeLaunch { emergency.activate(scope, message) } },
                 onCancel = { emergency.cancel() },
             )
 
@@ -126,7 +139,7 @@ fun OffGridApp(
                 linkState = linkState,
                 onBack = { screen = Screen.Home },
                 onApply = { _, _, _ -> screen = Screen.Home },
-                onTestConnection = { scope.launch { transport.discoverDevices() } },
+                onTestConnection = { safeLaunch { transport.discoverDevices() } },
             )
         }
     }
