@@ -95,7 +95,7 @@ fun OffGridApp(
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 val conversation = conversations[liveNode.id]
-                val canSend = liveNode.isSimulated || linkState == LinkState.CONNECTED
+                val canSend = linkState == LinkState.CONNECTED && !liveNode.isSimulated
                 ChatScreen(
                     node = liveNode,
                     messages = conversation?.messages ?: emptyList(),
@@ -118,24 +118,8 @@ fun OffGridApp(
                 identity = identity,
                 linkState = linkState,
                 onBack = { screen = Screen.Home },
-                onApply = { selfPort, peerHost, peerPort ->
-                    identity.selfPort = selfPort
-                    identity.peerHost = peerHost
-                    identity.peerPort = peerPort
-                    transport.configurePorts(selfPort, peerHost, peerPort)
-                    screen = Screen.Home
-                },
-                onTestConnection = {
-                    scope.launch {
-                        transport.connectToDevice(
-                            Node(
-                                id = MockCommunicationTransport.PEER_ID,
-                                name = "Linked Device",
-                                isSimulated = false,
-                            )
-                        )
-                    }
-                },
+                onApply = { _, _, _ -> screen = Screen.Home },
+                onTestConnection = { scope.launch { transport.discoverDevices() } },
             )
         }
     }
