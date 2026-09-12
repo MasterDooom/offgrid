@@ -1,6 +1,21 @@
 package com.offgrid.app.data.transport
 
+import android.content.Context
 import android.util.Log
+import com.google.android.gms.common.api.CommonStatusCodes
+import com.google.android.gms.nearby.Nearby
+import com.google.android.gms.nearby.connection.AdvertisingOptions
+import com.google.android.gms.nearby.connection.ConnectionInfo
+import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionsClient
+import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
+import com.google.android.gms.nearby.connection.DiscoveryOptions
+import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
+import com.google.android.gms.nearby.connection.Payload
+import com.google.android.gms.nearby.connection.PayloadCallback
+import com.google.android.gms.nearby.connection.PayloadTransferUpdate
+import com.google.android.gms.nearby.connection.Strategy
 import com.offgrid.app.data.model.DeviceCapability
 import com.offgrid.app.data.model.LinkState
 import com.offgrid.app.data.model.Message
@@ -8,211 +23,271 @@ import com.offgrid.app.data.model.MessageStatus
 import com.offgrid.app.data.model.MessageType
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.model.NodeStatus
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.BufferedWriter
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.resume
 
 /**
- * Demo transport: two real running app instances exchange newline-delimited JSON over a TCP socket.
- * Android emulators can reach the host machine at 10.0.2.2; adb forwarding then bridges a unique
- * host port to each emulator's listening port. This is genuine socket I/O, not a local fake.
+ * Real phone-to-phone transport for the MVP.
  *
- * A few simulated nodes keep the Nearby screen useful on one emulator. The linked device is the
- * only non-simulated peer. The stable local peer key is intentionally kept as PEER_ID so the chat
- * history does not jump to a different conversation key after the HELLO handshake.
+ * Uses Google Nearby Connections with the P2P_CLUSTER strategy. Nearby Connections can establish
+ * fully-offline peer-to-peer links using the device radios (Bluetooth/BLE/Wi-Fi) and exchange byte
+ * payloads directly between the participating devices. There is no OffGrid cloud/backend in the
+ * message path.
  *
- * Swap-in point for real hardware: implement MeshtasticCommunicationTransport against BLE/serial
- * while keeping CommunicationTransport unchanged.
+ * The class keeps its historical name so the rest of the MVP does not need a large refactor. The
+ * old TCP emulator implementation is no longer used by the app.
  */
-class MockCommunicationTransport(
-    private var selfPort: Int = DEFAULT_SELF_PORT,
-    private var peerHost: String = DEFAULT_PEER_HOST,
-    private var peerPort: Int = DEFAULT_PEER_PORT,
-) : CommunicationTransport {
+class MockCommunicationTransport(private val context: Context) : CommunicationTransport {
 
-    private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     private var selfId: String = ""
     private var selfName: String = ""
-    private var serverJob: Job? = null
-    private var socket: Socket? = null
-    private var writer: BufferedWriter? = null
+    private var started = false
 
-    private val _discoveredNodes = MutableStateFlow(simulatedNodes() + peerPlaceholder())
-    override val discoveredNodes: StateFlow<List<Node>> = _discoveredNodes.asStateFlow()
+    private val endpointToNodeId = ConcurrentHashMap<String, String>()
+    private val nodeIdToEndpoint = ConcurrentHashMap<String, String>()
+    private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
+    private val pendingConnections = ConcurrentHashMap<String, CompletableDeferred<Result<Unit>>>()
 
-    private val _linkState = MutableStateFlow(LinkState.OFFLINE)
-    override val linkState: StateFlow<LinkState> = _linkState.asStateFlow()
+    private val _discoveredNodes = kotlinx.coroutines.flow.MutableStateFlow<List<Node>>(emptyList())
+    override val discoveredNodes = _discoveredNodes.asStateFlowCompat()
 
-    private val _incoming = MutableSharedFlow<Message>(extraBufferCapacity = 64)
-    override val incomingMessages: Flow<Message> = _incoming
+    private val _linkState = kotlinx.coroutines.flow.MutableStateFlow(LinkState.OFFLINE)
+    override val linkState = _linkState.asStateFlowCompat()
+
+    private val _incoming = kotlinx.coroutines.flow.MutableSharedFlow<Message>(extraBufferCapacity = 64)
+    override val incomingMessages = _incoming.asSharedFlowCompat()
+
+    private val connectionCallback = object : ConnectionLifecycleCallback() {
+        override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
+            Log.d(TAG, "Connection initiated: ${connectionInfo.endpointName} ($endpointId)")
+            // This is a controlled demo network. Production should present/verify the
+            // authentication digits before accepting an unknown device.
+            client.acceptConnection(endpointId, payloadCallback)
+        }
+
+        override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
+            if (resolution.status.isSuccess) {
+                connectedEndpoints.add(endpointId)
+                setNodeStatus(endpointId, NodeStatus.CONNECTED)
+                _linkState.value = LinkState.CONNECTED
+                pendingConnections.remove(endpointId)?.complete(Result.success(Unit))
+                sendHello(endpointId)
+                Log.d(TAG, "Connected: $endpointId")
+            } else {
+                connectedEndpoints.remove(endpointId)
+                setNodeStatus(endpointId, NodeStatus.AVAILABLE)
+                pendingConnections.remove(endpointId)?.complete(
+                    Result.failure(IllegalStateException("Connection rejected: ${resolution.status.statusCode}"))
+                )
+                refreshLinkState()
+            }
+        }
+
+        override fun onDisconnected(endpointId: String) {
+            connectedEndpoints.remove(endpointId)
+            val nodeId = endpointToNodeId.remove(endpointId)
+            if (nodeId != null) nodeIdToEndpoint.remove(nodeId)
+            removeEndpoint(endpointId)
+            pendingConnections.remove(endpointId)?.complete(
+                Result.failure(IllegalStateException("Device disconnected"))
+            )
+            refreshLinkState()
+            Log.d(TAG, "Disconnected: $endpointId")
+        }
+    }
+
+    private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
+        override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
+            if (info.endpointName == selfName) return
+
+            endpointToNodeId.putIfAbsent(endpointId, endpointId)
+            upsertNode(
+                Node(
+                    id = endpointId,
+                    name = info.endpointName,
+                    status = if (connectedEndpoints.contains(endpointId)) NodeStatus.CONNECTED else NodeStatus.AVAILABLE,
+                    isSimulated = false,
+                    hops = 1,
+                    capabilities = setOf(DeviceCapability.MESSAGING),
+                )
+            )
+
+            if (!connectedEndpoints.contains(endpointId) && !pendingConnections.containsKey(endpointId)) {
+                val deferred = CompletableDeferred<Result<Unit>>()
+                pendingConnections[endpointId] = deferred
+                client.requestConnection(selfName, endpointId, connectionCallback)
+                    .addOnFailureListener { error ->
+                        pendingConnections.remove(endpointId)?.complete(Result.failure(error))
+                        setNodeStatus(endpointId, NodeStatus.AVAILABLE)
+                    }
+            }
+        }
+
+        override fun onEndpointLost(endpointId: String) {
+            if (!connectedEndpoints.contains(endpointId)) removeEndpoint(endpointId)
+        }
+    }
+
+    private val payloadCallback = object : PayloadCallback() {
+        override fun onPayloadReceived(endpointId: String, payload: Payload) {
+            if (payload.type != Payload.Type.BYTES) return
+            val bytes = payload.asBytes() ?: return
+            val line = bytes.toString(Charsets.UTF_8)
+            handlePayload(endpointId, line)
+        }
+
+        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
+            if (update.status == PayloadTransferUpdate.Status.FAILURE ||
+                update.status == PayloadTransferUpdate.Status.CANCELED
+            ) {
+                Log.w(TAG, "Payload failed from/to $endpointId: ${update.status}")
+            }
+        }
+    }
 
     override suspend fun start(selfId: String, selfName: String) {
         this.selfId = selfId
         this.selfName = selfName
-        startServer()
-    }
-
-    fun configurePorts(selfPort: Int, peerHost: String, peerPort: Int) {
-        this.selfPort = selfPort
-        this.peerHost = peerHost
-        this.peerPort = peerPort
-        stopServer()
-        startServer()
+        if (started) return
+        started = true
+        startAdvertising()
+        startDiscovery()
     }
 
     override suspend fun discoverDevices() {
-        _discoveredNodes.value = _discoveredNodes.value.map {
-            if (it.isSimulated) it.copy(lastSeen = System.currentTimeMillis()) else it
+        if (!started) {
+            start(selfId, selfName)
+        } else {
+            startDiscovery()
         }
     }
 
     override suspend fun connectToDevice(node: Node): Result<Unit> {
-        if (node.isSimulated) {
-            updateNode(node.id) { it.copy(status = NodeStatus.CONNECTED, lastSeen = System.currentTimeMillis()) }
-            return Result.success(Unit)
-        }
-        return connectToPeer()
-    }
+        val endpointId = nodeIdToEndpoint[node.id] ?: node.id.takeIf { endpointToNodeId.containsKey(it) }
+            ?: return Result.failure(IllegalStateException("Device is no longer nearby"))
 
-    private suspend fun connectToPeer(): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            updateNode(PEER_ID) { it.copy(status = NodeStatus.CONNECTING) }
-            _linkState.value = LinkState.CONNECTING
-            val client = Socket()
-            client.connect(InetSocketAddress(peerHost, peerPort), CONNECT_TIMEOUT_MS)
-            attach(client)
-            sendHello(expectReply = true).getOrThrow()
-        }.onFailure {
-            Log.w(TAG, "Connect to $peerHost:$peerPort failed", it)
-            updateNode(PEER_ID) { it.copy(status = NodeStatus.OFFLINE) }
-            _linkState.value = LinkState.LISTENING
+        if (connectedEndpoints.contains(endpointId)) return Result.success(Unit)
+
+        val deferred = pendingConnections[endpointId] ?: CompletableDeferred<Result<Unit>>().also {
+            pendingConnections[endpointId] = it
+            client.requestConnection(selfName, endpointId, connectionCallback)
+                .addOnFailureListener { error ->
+                    pendingConnections.remove(endpointId)?.complete(Result.failure(error))
+                }
         }
+
+        return runCatching { withTimeout(CONNECTION_TIMEOUT_MS) { deferred.await() } }
+            .getOrElse { Result.failure(it) }
     }
 
     override suspend fun sendMessage(message: Message): Result<Unit> {
-        val target = _discoveredNodes.value.find { it.id == message.receiverId }
-        return if (target?.isSimulated == true) {
-            simulateReply(target)
-            Result.success(Unit)
-        } else {
-            sendOverSocket(message)
+        val endpointId = nodeIdToEndpoint[message.receiverId]
+            ?: endpointToNodeId.entries.firstOrNull { it.value == message.receiverId }?.key
+            ?: return Result.failure(IllegalStateException("No live connection to ${message.receiverId}"))
+
+        if (!connectedEndpoints.contains(endpointId)) {
+            return Result.failure(IllegalStateException("Device is not connected"))
+        }
+
+        val json = messageToJson(message).toByteArray(Charsets.UTF_8)
+        return awaitTask(client.sendPayload(endpointId, Payload.fromBytes(json)))
+    }
+
+    private fun startAdvertising() {
+        client.startAdvertising(
+            selfName,
+            SERVICE_ID,
+            connectionCallback,
+            AdvertisingOptions.Builder()
+                .setStrategy(STRATEGY)
+                .build(),
+        ).addOnSuccessListener {
+            Log.d(TAG, "Advertising started")
+            refreshLinkState()
+        }.addOnFailureListener {
+            Log.e(TAG, "Advertising failed", it)
+            refreshLinkState()
         }
     }
 
-    private suspend fun sendOverSocket(message: Message): Result<Unit> = withContext(Dispatchers.IO) {
+    private fun startDiscovery() {
+        client.startDiscovery(
+            SERVICE_ID,
+            endpointDiscoveryCallback,
+            DiscoveryOptions.Builder()
+                .setStrategy(STRATEGY)
+                .build(),
+        ).addOnSuccessListener {
+            Log.d(TAG, "Discovery started")
+            refreshLinkState()
+        }.addOnFailureListener {
+            Log.e(TAG, "Discovery failed", it)
+            refreshLinkState()
+        }
+    }
+
+    private fun sendHello(endpointId: String) {
+        val hello = JSONObject().apply {
+            put("kind", "HELLO")
+            put("nodeId", selfId)
+            put("name", selfName)
+            put("version", 1)
+        }.toString().toByteArray(Charsets.UTF_8)
+
+        client.sendPayload(endpointId, Payload.fromBytes(hello))
+            .addOnFailureListener { Log.w(TAG, "HELLO send failed", it) }
+    }
+
+    private fun handlePayload(endpointId: String, raw: String) {
         runCatching {
-            val out = checkNotNull(writer) { "Not connected to the linked device yet" }
-            out.write(messageToJson(message))
-            out.newLine()
-            out.flush()
-        }
-    }
-
-    private fun simulateReply(target: Node) {
-        scope.launch {
-            delay(600)
-            _incoming.emit(
-                Message(
-                    conversationId = target.id,
-                    senderId = target.id,
-                    receiverId = selfId,
-                    content = cannedReply(target.name),
-                    status = MessageStatus.RECEIVED,
-                )
-            )
-        }
-    }
-
-    private fun cannedReply(name: String): String =
-        if (name.contains("Relay", ignoreCase = true)) "Relay node acknowledges. Standing by."
-        else "($name is a simulated demo node — message received.)"
-
-    private fun startServer() {
-        if (serverJob?.isActive == true) return
-        _linkState.value = LinkState.LISTENING
-        serverJob = scope.launch {
-            runCatching {
-                ServerSocket(selfPort).use { server ->
-                    while (!server.isClosed) attach(server.accept())
+            val json = JSONObject(raw)
+            when (json.optString("kind")) {
+                "HELLO" -> handleHello(endpointId, json)
+                "MESSAGE" -> {
+                    val senderId = json.getString("senderId")
+                    _incoming.tryEmit(jsonToMessage(json, senderId))
+                    val remoteName = _discoveredNodes.value.firstOrNull { it.id == senderId }?.name
+                    if (remoteName != null) setNodeStatus(senderId, NodeStatus.CONNECTED)
                 }
-            }.onFailure { Log.e(TAG, "Server on port $selfPort stopped", it) }
-        }
-    }
-
-    private fun stopServer() {
-        writer = null
-        socket?.close()
-        socket = null
-        serverJob?.cancel()
-        serverJob = null
-    }
-
-    private fun attach(newSocket: Socket) {
-        socket?.close()
-        socket = newSocket
-        writer = BufferedWriter(OutputStreamWriter(newSocket.getOutputStream(), Charsets.UTF_8))
-        _linkState.value = LinkState.CONNECTED
-        updateNode(PEER_ID) { it.copy(status = NodeStatus.CONNECTED, lastSeen = System.currentTimeMillis()) }
-        scope.launch {
-            runCatching {
-                BufferedReader(InputStreamReader(newSocket.getInputStream(), Charsets.UTF_8)).useLines { lines ->
-                    lines.forEach(::handleLine)
-                }
-            }.onFailure { Log.w(TAG, "Peer connection ended", it) }
-            updateNode(PEER_ID) { it.copy(status = NodeStatus.OFFLINE) }
-            _linkState.value = LinkState.LISTENING
-        }
-    }
-
-    private suspend fun sendHello(expectReply: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            val out = checkNotNull(writer) { "Not connected to the linked device yet" }
-            out.write(JSONObject().apply {
-                put("kind", "HELLO")
-                put("nodeId", selfId)
-                put("name", selfName)
-                put("reply", expectReply)
-            }.toString())
-            out.newLine()
-            out.flush()
-        }
-    }
-
-    private fun handleLine(line: String) {
-        val json = JSONObject(line)
-        when (json.optString("kind")) {
-            "HELLO" -> {
-                // Keep PEER_ID as the local conversation key; store the remote identity in the
-                // node's display name/status without replacing the key.
-                updateNode(PEER_ID) {
-                    it.copy(name = json.getString("name"), status = NodeStatus.CONNECTED)
-                }
-                if (json.optBoolean("reply", true)) scope.launch { sendHello(expectReply = false) }
             }
-            "MESSAGE" -> scope.launch { _incoming.emit(jsonToMessage(json)) }
-        }
+        }.onFailure { Log.w(TAG, "Invalid payload", it) }
     }
 
-    private fun updateNode(id: String, transform: (Node) -> Node) {
-        _discoveredNodes.value = _discoveredNodes.value.map { if (it.id == id) transform(it) else it }
+    private fun handleHello(endpointId: String, json: JSONObject) {
+        val remoteId = json.getString("nodeId")
+        val remoteName = json.optString("name", "OFFGRID device")
+        endpointToNodeId[endpointId] = remoteId
+        nodeIdToEndpoint[remoteId] = endpointId
+
+        val existing = _discoveredNodes.value.firstOrNull {
+            it.id == endpointId || it.id == remoteId
+        }
+        val node = (existing ?: Node(id = remoteId, name = remoteName)).copy(
+            id = remoteId,
+            name = remoteName,
+            status = NodeStatus.CONNECTED,
+            lastSeen = System.currentTimeMillis(),
+            isSimulated = false,
+            hops = 1,
+            capabilities = setOf(DeviceCapability.MESSAGING),
+        )
+
+        _discoveredNodes.value = _discoveredNodes.value
+            .filterNot { it.id == endpointId || it.id == remoteId }
+            .plus(node)
+            .distinctBy { it.id }
     }
 
     private fun messageToJson(message: Message): String = JSONObject().apply {
@@ -225,47 +300,79 @@ class MockCommunicationTransport(
         put("type", message.type.name)
     }.toString()
 
-    private fun jsonToMessage(json: JSONObject): Message = Message(
+    private fun jsonToMessage(json: JSONObject, senderId: String): Message = Message(
         id = json.getString("id"),
-        // PEER_ID is the stable local conversation key for the linked socket.
-        conversationId = PEER_ID,
-        senderId = json.getString("senderId"),
+        conversationId = senderId,
+        senderId = senderId,
         receiverId = json.getString("receiverId"),
         content = json.getString("content"),
         timestamp = json.optLong("timestamp", System.currentTimeMillis()),
         status = MessageStatus.RECEIVED,
-        type = runCatching { MessageType.valueOf(json.optString("type", MessageType.TEXT.name)) }
-            .getOrDefault(MessageType.TEXT),
+        type = runCatching {
+            MessageType.valueOf(json.optString("type", MessageType.TEXT.name))
+        }.getOrDefault(MessageType.TEXT),
     )
 
-    private fun peerPlaceholder() = Node(
-        id = PEER_ID,
-        name = "Linked Device",
-        status = NodeStatus.OFFLINE,
-        isSimulated = false,
-        capabilities = setOf(DeviceCapability.MESSAGING),
-    )
+    private fun upsertNode(node: Node) {
+        _discoveredNodes.value = (_discoveredNodes.value.filterNot { it.id == node.id } + node)
+            .distinctBy { it.id }
+    }
 
-    private fun simulatedNodes() = listOf(
-        Node("OFFGRID-7A21", "Aarav", NodeStatus.AVAILABLE, isSimulated = true, signalStrength = 82, hops = 1),
-        Node("OFFGRID-92BF", "Rahul", NodeStatus.AVAILABLE, isSimulated = true, signalStrength = 64, hops = 1),
-        Node(
-            "OFFGRID-RELAY01", "Emergency Relay", NodeStatus.AVAILABLE, isSimulated = true, hops = 2,
-            capabilities = setOf(DeviceCapability.MESSAGING, DeviceCapability.RELAY, DeviceCapability.EMERGENCY_RESPONDER),
-        ),
-    )
+    private fun setNodeStatus(endpointId: String, status: NodeStatus) {
+        val id = endpointToNodeId[endpointId] ?: endpointId
+        _discoveredNodes.value = _discoveredNodes.value.map {
+            if (it.id == id || it.id == endpointId) it.copy(status = status, lastSeen = System.currentTimeMillis()) else it
+        }
+    }
+
+    private fun removeEndpoint(endpointId: String) {
+        val id = endpointToNodeId[endpointId]
+        _discoveredNodes.value = _discoveredNodes.value.filterNot {
+            it.id == endpointId || (id != null && it.id == id)
+        }
+    }
+
+    private fun refreshLinkState() {
+        _linkState.value = when {
+            connectedEndpoints.isNotEmpty() -> LinkState.CONNECTED
+            started -> LinkState.LISTENING
+            else -> LinkState.OFFLINE
+        }
+    }
+
+    private suspend fun awaitTask(task: com.google.android.gms.tasks.Task<Void>): Result<Unit> =
+        suspendCancellableCoroutine { continuation ->
+            task.addOnSuccessListener {
+                continuation.resume(Result.success(Unit))
+            }.addOnFailureListener { error ->
+                continuation.resume(Result.failure(error))
+            }
+        }
 
     override fun stop() {
-        stopServer()
+        if (!started) return
+        started = false
+        client.stopAdvertising()
+        client.stopDiscovery()
+        client.stopAllEndpoints()
+        endpointToNodeId.clear()
+        nodeIdToEndpoint.clear()
+        connectedEndpoints.clear()
+        pendingConnections.values.forEach { it.complete(Result.failure(IllegalStateException("Transport stopped"))) }
+        pendingConnections.clear()
+        _discoveredNodes.value = emptyList()
+        _linkState.value = LinkState.OFFLINE
         scope.cancel()
     }
 
     companion object {
-        private const val TAG = "MockTransport"
-        const val PEER_ID = "OFFGRID-PEER"
-        const val DEFAULT_SELF_PORT = 8990
-        const val DEFAULT_PEER_HOST = "10.0.2.2"
-        const val DEFAULT_PEER_PORT = 8991
-        private const val CONNECT_TIMEOUT_MS = 5_000
+        private const val TAG = "OffGridNearby"
+        private const val SERVICE_ID = "com.offgrid.app.offline"
+        private const val CONNECTION_TIMEOUT_MS = 10_000L
+        private val STRATEGY = Strategy.P2P_CLUSTER
     }
 }
+
+/* Small aliases keep the transport source independent of the exact Flow extension imports. */
+private fun <T> kotlinx.coroutines.flow.MutableStateFlow<T>.asStateFlowCompat() = asStateFlow()
+private fun <T> kotlinx.coroutines.flow.MutableSharedFlow<T>.asSharedFlowCompat() = asSharedFlow()
