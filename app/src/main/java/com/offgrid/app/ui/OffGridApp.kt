@@ -54,6 +54,7 @@ fun OffGridApp(
 
     val nodes by transport.discoveredNodes.collectAsState()
     val linkState by transport.linkState.collectAsState()
+    val transportStatus by transport.transportStatus.collectAsState()
     val conversations by messaging.conversations.collectAsState()
     val sos by emergency.sos.collectAsState()
 
@@ -65,12 +66,13 @@ fun OffGridApp(
                 identity = identity,
                 nodes = nodes,
                 linkState = linkState,
+                transportStatus = transportStatus,
                 conversations = conversations,
                 onSelectNode = { node -> screen = Screen.Profile(node) },
                 onOpenConversation = { node ->
                     scope.launch {
-                        transport.connectToDevice(node)
-                        screen = Screen.Chat(node)
+                        val result = transport.connectToDevice(node)
+                        if (result.isSuccess) screen = Screen.Chat(node)
                     }
                 },
                 onDiscover = { scope.launch { transport.discoverDevices() } },
@@ -85,8 +87,8 @@ fun OffGridApp(
                     onBack = { screen = Screen.Home },
                     onMessage = {
                         scope.launch {
-                            transport.connectToDevice(liveNode)
-                            screen = Screen.Chat(liveNode)
+                            val result = transport.connectToDevice(liveNode)
+                            if (result.isSuccess) screen = Screen.Chat(liveNode)
                         }
                     },
                 )
