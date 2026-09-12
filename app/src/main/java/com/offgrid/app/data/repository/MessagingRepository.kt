@@ -11,11 +11,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
-/**
- * Owns message/conversation state. The UI never touches CommunicationTransport directly —
- * it calls send()/sendEmergency() here and observes [conversations].
- */
+/** Owns message/conversation state. */
 class MessagingRepository(
     private val transport: CommunicationTransport,
     private val selfId: String,
@@ -23,13 +22,16 @@ class MessagingRepository(
 ) {
     private val _conversations = MutableStateFlow<Map<String, Conversation>>(emptyMap())
     val conversations: StateFlow<Map<String, Conversation>> = _conversations.asStateFlow()
+    private val sendMutex = Mutex()
 
     init {
         scope.launch {
-            runCatching {
+            try {
                 transport.incomingMessages.collect { message ->
-                    append(message.conversationId, message)
+                    runCatching { append(message.conversationId, message) }
                 }
+            } catch (_: Throwable) {
+                // A malformed/failed packet must never terminate the UI coroutine.
             }
         }
     }
@@ -38,25 +40,34 @@ class MessagingRepository(
         _conversations.value[node.id] ?: Conversation(id = node.id, peer = node)
 
     suspend fun send(node: Node, text: String) {
-        val outgoing = Message(
-            conversationId = node.id,
-            senderId = selfId,
-            receiverId = node.id,
-            content = text,
-        )
-        append(node.id, outgoing)
+        if (text.isBlank()) return
 
-        val result = runCatching { transport.sendMessage(outgoing) }
-            .getOrElse { Result.failure(it) }
+        sendMutex.withLock {
+            val outgoing = Message(
+                conversationId = node.id,
+                senderId = selfId,
+                receiverId = node.id,
+                content = text,
+            )
+            runCatching { append(node.id, outgoing) }
 
-        replaceStatus(
-            node.id,
-            outgoing.id,
-            if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
-        )
+            val result = try {
+                transport.sendMessage(outgoing)
+            } catch (error: Throwable) {
+                Result.failure(error)
+            }
+
+            runCatching {
+                replaceStatus(
+                    node.id,
+                    outgoing.id,
+                    if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
+                )
+            }
+        }
     }
 
-    suspend fun sendEmergency(node: Node, text: String): Result<Unit> {
+    suspend fun sendEmergency(node: Node, text: String): Result<Unit> = sendMutex.withLock {
         val outgoing = Message(
             conversationId = node.id,
             senderId = selfId,
@@ -64,17 +75,22 @@ class MessagingRepository(
             content = text,
             type = MessageType.EMERGENCY,
         )
-        append(node.id, outgoing)
+        runCatching { append(node.id, outgoing) }
 
-        val result = runCatching { transport.sendMessage(outgoing) }
-            .getOrElse { Result.failure(it) }
+        val result = try {
+            transport.sendMessage(outgoing)
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
 
-        replaceStatus(
-            node.id,
-            outgoing.id,
-            if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
-        )
-        return result
+        runCatching {
+            replaceStatus(
+                node.id,
+                outgoing.id,
+                if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
+            )
+        }
+        result
     }
 
     private fun append(conversationId: String, message: Message) {
