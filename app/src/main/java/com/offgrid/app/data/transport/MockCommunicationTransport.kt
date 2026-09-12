@@ -2,12 +2,14 @@ package com.offgrid.app.data.transport
 
 import android.content.Context
 import android.util.Log
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
 import com.google.android.gms.nearby.connection.ConnectionResolution
 import com.google.android.gms.nearby.connection.ConnectionsClient
+import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
 import com.google.android.gms.nearby.connection.DiscoveryOptions
 import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
@@ -23,38 +25,22 @@ import com.offgrid.app.data.model.MessageType
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.model.NodeStatus
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
-/**
- * Real phone-to-phone transport for the MVP.
- *
- * Uses Google Nearby Connections with the P2P_CLUSTER strategy. Nearby Connections establishes
- * fully-offline peer-to-peer links using the device radios and exchanges byte payloads directly
- * between participating devices. There is no OffGrid cloud/backend in the message path.
- *
- * The historical class name is kept so the rest of the MVP remains small. The old emulator TCP
- * implementation is no longer used by the app.
- */
+/** Real phone-to-phone transport used by the MVP. */
 class MockCommunicationTransport(private val context: Context) : CommunicationTransport {
-
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private var selfId: String = ""
-    private var selfName: String = ""
+    private var selfId = ""
+    private var selfName = ""
     private var started = false
 
     private val endpointToNodeId = ConcurrentHashMap<String, String>()
@@ -71,11 +57,19 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     private val _incoming = MutableSharedFlow<Message>(extraBufferCapacity = 64)
     override val incomingMessages = _incoming.asSharedFlow()
 
+    private val _transportStatus = MutableStateFlow("Starting nearby discovery…")
+    val transportStatus = _transportStatus.asStateFlow()
+
     private val connectionCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             Log.d(TAG, "Connection initiated: ${connectionInfo.endpointName} ($endpointId)")
-            // Controlled demo network: auto-accept. Production should verify authentication digits.
+            _transportStatus.value = "Connection request from ${connectionInfo.endpointName}"
+            // Demo mode: automatically accept so the judge demo is one tap.
             client.acceptConnection(endpointId, payloadCallback)
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "Accept failed", error)
+                    _transportStatus.value = "Accept failed: ${errorMessage(error)}"
+                }
         }
 
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
@@ -83,15 +77,18 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 connectedEndpoints.add(endpointId)
                 setNodeStatus(endpointId, NodeStatus.CONNECTED)
                 _linkState.value = LinkState.CONNECTED
+                _transportStatus.value = "Connected"
                 pendingConnections.remove(endpointId)?.complete(Result.success(Unit))
                 sendHello(endpointId)
                 Log.d(TAG, "Connected: $endpointId")
             } else {
                 connectedEndpoints.remove(endpointId)
                 setNodeStatus(endpointId, NodeStatus.AVAILABLE)
-                pendingConnections.remove(endpointId)?.complete(
-                    Result.failure(IllegalStateException("Connection rejected: ${resolution.status.statusCode}"))
+                val error = IllegalStateException(
+                    "Connection rejected: ${ConnectionsStatusCodes.getStatusCodeString(resolution.status.statusCode)}"
                 )
+                pendingConnections.remove(endpointId)?.complete(Result.failure(error))
+                _transportStatus.value = "Connection failed: ${error.message}"
                 refreshLinkState()
             }
         }
@@ -104,6 +101,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             pendingConnections.remove(endpointId)?.complete(
                 Result.failure(IllegalStateException("Device disconnected"))
             )
+            _transportStatus.value = "Device disconnected"
             refreshLinkState()
             Log.d(TAG, "Disconnected: $endpointId")
         }
@@ -111,8 +109,10 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            if (info.endpointName == selfName) return
+            Log.d(TAG, "FOUND endpoint=$endpointId name=${info.endpointName}")
+            _transportStatus.value = "Found ${info.endpointName}"
 
+            // Keep the endpoint ID until the peer sends its OFFGRID identity payload.
             endpointToNodeId.putIfAbsent(endpointId, endpointId)
             upsertNode(
                 Node(
@@ -125,18 +125,12 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 )
             )
 
-            if (!connectedEndpoints.contains(endpointId) && !pendingConnections.containsKey(endpointId)) {
-                val deferred = CompletableDeferred<Result<Unit>>()
-                pendingConnections[endpointId] = deferred
-                client.requestConnection(selfName, endpointId, connectionCallback)
-                    .addOnFailureListener { error ->
-                        pendingConnections.remove(endpointId)?.complete(Result.failure(error))
-                        setNodeStatus(endpointId, NodeStatus.AVAILABLE)
-                    }
-            }
+            // IMPORTANT: discovery does not automatically connect. The user selects a device,
+            // then the Profile screen calls connectToDevice(). This matches the intended UX.
         }
 
         override fun onEndpointLost(endpointId: String) {
+            Log.d(TAG, "LOST endpoint=$endpointId")
             if (!connectedEndpoints.contains(endpointId)) removeEndpoint(endpointId)
         }
     }
@@ -152,7 +146,8 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             if (update.status == PayloadTransferUpdate.Status.FAILURE ||
                 update.status == PayloadTransferUpdate.Status.CANCELED
             ) {
-                Log.w(TAG, "Payload failed from/to $endpointId: ${update.status}")
+                Log.w(TAG, "Payload failed for $endpointId: ${update.status}")
+                _transportStatus.value = "Message transfer failed"
             }
         }
     }
@@ -162,12 +157,22 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         this.selfName = selfName
         if (started) return
         started = true
+        _transportStatus.value = "Starting advertising + discovery…"
         startAdvertising()
         startDiscovery()
     }
 
     override suspend fun discoverDevices() {
-        if (!started) start(selfId, selfName) else startDiscovery()
+        if (!started) {
+            start(selfId, selfName)
+            return
+        }
+
+        // A scan button should actually restart discovery instead of hitting
+        // STATUS_ALREADY_DISCOVERING on an already-running scan.
+        client.stopDiscovery()
+        _transportStatus.value = "Scanning for nearby OFFGRID devices…"
+        startDiscovery()
     }
 
     override suspend fun connectToDevice(node: Node): Result<Unit> {
@@ -177,11 +182,13 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
 
         if (connectedEndpoints.contains(endpointId)) return Result.success(Unit)
 
+        _transportStatus.value = "Connecting to ${node.name}…"
         val deferred = pendingConnections[endpointId] ?: CompletableDeferred<Result<Unit>>().also {
             pendingConnections[endpointId] = it
             client.requestConnection(selfName, endpointId, connectionCallback)
                 .addOnFailureListener { error ->
                     pendingConnections.remove(endpointId)?.complete(Result.failure(error))
+                    _transportStatus.value = "Connection request failed: ${errorMessage(error)}"
                 }
         }
 
@@ -211,8 +218,10 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         ).addOnSuccessListener {
             Log.d(TAG, "Advertising started")
             refreshLinkState()
-        }.addOnFailureListener {
-            Log.e(TAG, "Advertising failed", it)
+            updateReadyStatus()
+        }.addOnFailureListener { error ->
+            Log.e(TAG, "Advertising failed", error)
+            _transportStatus.value = "Advertising failed: ${errorMessage(error)}"
             refreshLinkState()
         }
     }
@@ -225,9 +234,26 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         ).addOnSuccessListener {
             Log.d(TAG, "Discovery started")
             refreshLinkState()
-        }.addOnFailureListener {
-            Log.e(TAG, "Discovery failed", it)
+            updateReadyStatus()
+        }.addOnFailureListener { error ->
+            Log.e(TAG, "Discovery failed", error)
+            _transportStatus.value = "Discovery failed: ${errorMessage(error)}"
             refreshLinkState()
+        }
+    }
+
+    private fun updateReadyStatus() {
+        if (_discoveredNodes.value.isEmpty() && _transportStatus.value.contains("started", ignoreCase = true)) {
+            _transportStatus.value = "Live • advertising + scanning"
+        }
+    }
+
+    private fun errorMessage(error: Exception): String {
+        val code = (error as? ApiException)?.statusCode
+        return if (code != null) {
+            "${ConnectionsStatusCodes.getStatusCodeString(code)} ($code)"
+        } else {
+            error.message ?: error.javaClass.simpleName
         }
     }
 
@@ -313,7 +339,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     }
 
     private fun removeEndpoint(endpointId: String) {
-        val id = endpointToNodeId[endpointId]
+        val id = endpointToNodeId.remove(endpointId)
         _discoveredNodes.value = _discoveredNodes.value.filterNot {
             it.id == endpointId || (id != null && it.id == id)
         }
@@ -348,7 +374,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         pendingConnections.clear()
         _discoveredNodes.value = emptyList()
         _linkState.value = LinkState.OFFLINE
-        scope.cancel()
+        _transportStatus.value = "Offline"
     }
 
     companion object {
