@@ -15,6 +15,15 @@ android {
         versionName = "0.1.0"
     }
     buildFeatures { compose = true; buildConfig = true }
+
+    // Keep Java and Kotlin bytecode targets identical so the project builds consistently.
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
 }
 
 dependencies {
