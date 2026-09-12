@@ -1,4 +1,4 @@
-package com.offgrid.app
+package com.offgrid.app.legacy.wifidirect
 
 import kotlinx.coroutines.flow.StateFlow
 

@@ -1,4 +1,8 @@
-package com.offgrid.app
+package com.offgrid.app.legacy.wifidirect
+
+// Preserved from Milestone 1 (Wi-Fi Direct). Kept only so WifiDirectTransport/SocketChannel/
+// PacketForwarder still compile as a reference implementation for real hardware later.
+// The active app uses com.offgrid.app.data.model instead.
 
 import org.json.JSONObject
 import java.util.UUID

@@ -1,4 +1,4 @@
-package com.offgrid.app
+package com.offgrid.app.legacy.wifidirect
 
 /** Foundation for Milestone 2. The caller supplies a routing policy and persistence queue later. */
 class PacketForwarder(private val localNodeId: String) {
