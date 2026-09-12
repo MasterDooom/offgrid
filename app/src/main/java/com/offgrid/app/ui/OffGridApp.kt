@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import com.offgrid.app.data.model.LinkState
 import com.offgrid.app.data.model.Node
+import com.offgrid.app.data.model.NodeStatus
 import com.offgrid.app.data.repository.EmergencyRepository
 import com.offgrid.app.data.repository.IdentityManager
 import com.offgrid.app.data.repository.MessagingRepository
@@ -67,8 +68,18 @@ fun OffGridApp(
                 block()
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Throwable) {
-                // UI actions are isolated: a failed nearby operation must not close OffGrid.
+            } catch (error: Throwable) {
+                // Never let a failed nearby/UI operation crash the app.
+            }
+        }
+    }
+
+    fun openChat(node: Node) {
+        // The chat is opened immediately. Connection work happens asynchronously.
+        screen = Screen.Chat(node)
+        safeLaunch {
+            if (node.status != NodeStatus.CONNECTED) {
+                transport.connectToDevice(node)
             }
         }
     }
@@ -82,10 +93,7 @@ fun OffGridApp(
                 transportStatus = transportStatus,
                 conversations = conversations,
                 onSelectNode = { node -> screen = Screen.Profile(node) },
-                onOpenConversation = { node ->
-                    screen = Screen.Chat(node)
-                    safeLaunch { transport.connectToDevice(node) }
-                },
+                onOpenConversation = { node -> openChat(node) },
                 onDiscover = { safeLaunch { transport.discoverDevices() } },
                 onEmergency = { screen = Screen.Emergency },
                 onOpenSettings = { screen = Screen.DemoSetup },
@@ -96,17 +104,16 @@ fun OffGridApp(
                 ProfileScreen(
                     node = liveNode,
                     onBack = { screen = Screen.Home },
-                    onMessage = {
-                        screen = Screen.Chat(liveNode)
-                        safeLaunch { transport.connectToDevice(liveNode) }
-                    },
+                    onMessage = { openChat(liveNode) },
                 )
             }
 
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 val conversation = conversations[liveNode.id]
-                val canSend = linkState == LinkState.CONNECTED && !liveNode.isSimulated
+                // Connection state is per selected endpoint, not global. This matters when A is
+                // connected to B while C is also visible in the nearby list.
+                val canSend = liveNode.status == NodeStatus.CONNECTED && !liveNode.isSimulated
                 ChatScreen(
                     node = liveNode,
                     messages = conversation?.messages ?: emptyList(),
@@ -115,12 +122,10 @@ fun OffGridApp(
                     onBack = { screen = Screen.Home },
                     onSend = { text ->
                         safeLaunch {
-                            val connected = if (transport.linkState.value == LinkState.CONNECTED) {
-                                true
-                            } else {
-                                transport.connectToDevice(liveNode).isSuccess
-                            }
-                            if (connected) messaging.send(liveNode, text)
+                            // The send button is only enabled for a connected selected peer.
+                            // If that peer drops between frames, send() returns a failure rather
+                            // than throwing through the UI.
+                            messaging.send(liveNode, text)
                         }
                     },
                 )
