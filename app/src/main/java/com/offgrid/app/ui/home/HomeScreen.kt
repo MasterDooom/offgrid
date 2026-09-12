@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.IconButton
@@ -42,6 +41,7 @@ fun HomeScreen(
     identity: IdentityManager,
     nodes: List<Node>,
     linkState: LinkState,
+    transportStatus: String,
     conversations: Map<String, Conversation>,
     onSelectNode: (Node) -> Unit,
     onOpenConversation: (Node) -> Unit,
@@ -75,6 +75,7 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item { IdentityCard(identity, nodes.count { it.status != NodeStatus.OFFLINE }, linkState) }
+            item { NetworkStatusCard(transportStatus, nodes.size) }
             item { EmergencyEntry(onEmergency) }
             item {
                 Row(
@@ -82,16 +83,55 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Nearby", style = MaterialTheme.typography.titleMedium)
+                    Text("Nearby devices", style = MaterialTheme.typography.titleMedium)
                     OutlinedButton(onClick = onDiscover) { Text("Scan") }
                 }
             }
-            items(nodes, key = { it.id }) { node -> NearbyRow(node) { onSelectNode(node) } }
+            if (nodes.isEmpty()) {
+                item { EmptyNearbyCard(transportStatus) }
+            }
+            items(nodes, key = { it.id }) { node ->
+                NearbyRow(node) { onSelectNode(node) }
+            }
             if (recent.isNotEmpty()) {
                 item { Text("Recent conversations", style = MaterialTheme.typography.titleMedium) }
                 items(recent, key = { it.id }) { conversation ->
                     RecentConversationRow(conversation) { onOpenConversation(conversation.peer) }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NetworkStatusCard(status: String, nearbyCount: Int) {
+    val failed = status.contains("failed", ignoreCase = true)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusDot(if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                Text("OFFGRID LINK", style = MaterialTheme.typography.labelLarge)
+            }
+            Text(status, style = MaterialTheme.typography.bodyMedium, color = if (failed) MaterialTheme.colorScheme.error else Color.Unspecified)
+            Text(
+                if (nearbyCount == 0) "Searching for other OffGrid devices…" else "$nearbyCount live device(s) nearby",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyNearbyCard(status: String) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("No nearby devices yet", style = MaterialTheme.typography.titleSmall)
+            Text("Keep OffGrid open on the other phone with Bluetooth and Wi-Fi enabled, then tap Scan.", style = MaterialTheme.typography.bodySmall)
+            if (status.contains("failed", ignoreCase = true)) {
+                Text(status, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -163,15 +203,11 @@ private fun StatusDot(color: Color) {
     Box(Modifier.size(10.dp).background(color, CircleShape))
 }
 
-private fun nodeSubtitle(node: Node): String {
-    val availability = when (node.status) {
-        NodeStatus.CONNECTED -> "Connected"
-        NodeStatus.CONNECTING -> "Connecting…"
-        NodeStatus.AVAILABLE -> "Nearby · Available"
-        NodeStatus.OFFLINE -> "Not reachable"
-    }
-    val kind = if (node.isSimulated) "Simulated demo node" else "Live link"
-    return "$availability · $kind"
+private fun nodeSubtitle(node: Node): String = when (node.status) {
+    NodeStatus.CONNECTED -> "Connected · Tap to open chat"
+    NodeStatus.CONNECTING -> "Connecting…"
+    NodeStatus.AVAILABLE -> "Nearby · Tap to connect"
+    NodeStatus.OFFLINE -> "Not reachable"
 }
 
 private fun nodeStatusColor(status: NodeStatus): Color = when (status) {
@@ -190,7 +226,7 @@ private fun linkStateColor(state: LinkState): Color = when (state) {
 
 private fun linkStateLabel(state: LinkState): String = when (state) {
     LinkState.CONNECTED -> "Linked device connected"
-    LinkState.CONNECTING -> "Connecting to linked device…"
-    LinkState.LISTENING -> "Listening for linked device"
+    LinkState.CONNECTING -> "Connecting…"
+    LinkState.LISTENING -> "Advertising + discovering"
     LinkState.OFFLINE -> "Offline"
 }
