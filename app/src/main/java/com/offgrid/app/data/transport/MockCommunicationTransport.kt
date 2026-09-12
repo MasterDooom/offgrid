@@ -2,7 +2,6 @@ package com.offgrid.app.data.transport
 
 import android.content.Context
 import android.util.Log
-import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
@@ -28,6 +27,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
@@ -38,13 +41,12 @@ import kotlin.coroutines.resume
 /**
  * Real phone-to-phone transport for the MVP.
  *
- * Uses Google Nearby Connections with the P2P_CLUSTER strategy. Nearby Connections can establish
- * fully-offline peer-to-peer links using the device radios (Bluetooth/BLE/Wi-Fi) and exchange byte
- * payloads directly between the participating devices. There is no OffGrid cloud/backend in the
- * message path.
+ * Uses Google Nearby Connections with the P2P_CLUSTER strategy. Nearby Connections establishes
+ * fully-offline peer-to-peer links using the device radios and exchanges byte payloads directly
+ * between participating devices. There is no OffGrid cloud/backend in the message path.
  *
- * The class keeps its historical name so the rest of the MVP does not need a large refactor. The
- * old TCP emulator implementation is no longer used by the app.
+ * The historical class name is kept so the rest of the MVP remains small. The old emulator TCP
+ * implementation is no longer used by the app.
  */
 class MockCommunicationTransport(private val context: Context) : CommunicationTransport {
 
@@ -60,20 +62,19 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingConnections = ConcurrentHashMap<String, CompletableDeferred<Result<Unit>>>()
 
-    private val _discoveredNodes = kotlinx.coroutines.flow.MutableStateFlow<List<Node>>(emptyList())
-    override val discoveredNodes = _discoveredNodes.asStateFlowCompat()
+    private val _discoveredNodes = MutableStateFlow<List<Node>>(emptyList())
+    override val discoveredNodes = _discoveredNodes.asStateFlow()
 
-    private val _linkState = kotlinx.coroutines.flow.MutableStateFlow(LinkState.OFFLINE)
-    override val linkState = _linkState.asStateFlowCompat()
+    private val _linkState = MutableStateFlow(LinkState.OFFLINE)
+    override val linkState = _linkState.asStateFlow()
 
-    private val _incoming = kotlinx.coroutines.flow.MutableSharedFlow<Message>(extraBufferCapacity = 64)
-    override val incomingMessages = _incoming.asSharedFlowCompat()
+    private val _incoming = MutableSharedFlow<Message>(extraBufferCapacity = 64)
+    override val incomingMessages = _incoming.asSharedFlow()
 
     private val connectionCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             Log.d(TAG, "Connection initiated: ${connectionInfo.endpointName} ($endpointId)")
-            // This is a controlled demo network. Production should present/verify the
-            // authentication digits before accepting an unknown device.
+            // Controlled demo network: auto-accept. Production should verify authentication digits.
             client.acceptConnection(endpointId, payloadCallback)
         }
 
@@ -144,8 +145,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type != Payload.Type.BYTES) return
             val bytes = payload.asBytes() ?: return
-            val line = bytes.toString(Charsets.UTF_8)
-            handlePayload(endpointId, line)
+            handlePayload(endpointId, bytes.toString(Charsets.UTF_8))
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
@@ -167,15 +167,12 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     }
 
     override suspend fun discoverDevices() {
-        if (!started) {
-            start(selfId, selfName)
-        } else {
-            startDiscovery()
-        }
+        if (!started) start(selfId, selfName) else startDiscovery()
     }
 
     override suspend fun connectToDevice(node: Node): Result<Unit> {
-        val endpointId = nodeIdToEndpoint[node.id] ?: node.id.takeIf { endpointToNodeId.containsKey(it) }
+        val endpointId = nodeIdToEndpoint[node.id]
+            ?: node.id.takeIf { endpointToNodeId.containsKey(it) }
             ?: return Result.failure(IllegalStateException("Device is no longer nearby"))
 
         if (connectedEndpoints.contains(endpointId)) return Result.success(Unit)
@@ -201,8 +198,8 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             return Result.failure(IllegalStateException("Device is not connected"))
         }
 
-        val json = messageToJson(message).toByteArray(Charsets.UTF_8)
-        return awaitTask(client.sendPayload(endpointId, Payload.fromBytes(json)))
+        val payload = Payload.fromBytes(messageToJson(message).toByteArray(Charsets.UTF_8))
+        return awaitTask(client.sendPayload(endpointId, payload))
     }
 
     private fun startAdvertising() {
@@ -210,9 +207,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             selfName,
             SERVICE_ID,
             connectionCallback,
-            AdvertisingOptions.Builder()
-                .setStrategy(STRATEGY)
-                .build(),
+            AdvertisingOptions.Builder().setStrategy(STRATEGY).build(),
         ).addOnSuccessListener {
             Log.d(TAG, "Advertising started")
             refreshLinkState()
@@ -226,9 +221,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         client.startDiscovery(
             SERVICE_ID,
             endpointDiscoveryCallback,
-            DiscoveryOptions.Builder()
-                .setStrategy(STRATEGY)
-                .build(),
+            DiscoveryOptions.Builder().setStrategy(STRATEGY).build(),
         ).addOnSuccessListener {
             Log.d(TAG, "Discovery started")
             refreshLinkState()
@@ -245,7 +238,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             put("name", selfName)
             put("version", 1)
         }.toString().toByteArray(Charsets.UTF_8)
-
         client.sendPayload(endpointId, Payload.fromBytes(hello))
             .addOnFailureListener { Log.w(TAG, "HELLO send failed", it) }
     }
@@ -258,8 +250,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 "MESSAGE" -> {
                     val senderId = json.getString("senderId")
                     _incoming.tryEmit(jsonToMessage(json, senderId))
-                    val remoteName = _discoveredNodes.value.firstOrNull { it.id == senderId }?.name
-                    if (remoteName != null) setNodeStatus(senderId, NodeStatus.CONNECTED)
                 }
             }
         }.onFailure { Log.w(TAG, "Invalid payload", it) }
@@ -271,9 +261,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         endpointToNodeId[endpointId] = remoteId
         nodeIdToEndpoint[remoteId] = endpointId
 
-        val existing = _discoveredNodes.value.firstOrNull {
-            it.id == endpointId || it.id == remoteId
-        }
+        val existing = _discoveredNodes.value.firstOrNull { it.id == endpointId || it.id == remoteId }
         val node = (existing ?: Node(id = remoteId, name = remoteName)).copy(
             id = remoteId,
             name = remoteName,
@@ -308,9 +296,8 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         content = json.getString("content"),
         timestamp = json.optLong("timestamp", System.currentTimeMillis()),
         status = MessageStatus.RECEIVED,
-        type = runCatching {
-            MessageType.valueOf(json.optString("type", MessageType.TEXT.name))
-        }.getOrDefault(MessageType.TEXT),
+        type = runCatching { MessageType.valueOf(json.optString("type", MessageType.TEXT.name)) }
+            .getOrDefault(MessageType.TEXT),
     )
 
     private fun upsertNode(node: Node) {
@@ -342,11 +329,8 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
 
     private suspend fun awaitTask(task: com.google.android.gms.tasks.Task<Void>): Result<Unit> =
         suspendCancellableCoroutine { continuation ->
-            task.addOnSuccessListener {
-                continuation.resume(Result.success(Unit))
-            }.addOnFailureListener { error ->
-                continuation.resume(Result.failure(error))
-            }
+            task.addOnSuccessListener { continuation.resume(Result.success(Unit)) }
+                .addOnFailureListener { error -> continuation.resume(Result.failure(error)) }
         }
 
     override fun stop() {
@@ -358,7 +342,9 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         endpointToNodeId.clear()
         nodeIdToEndpoint.clear()
         connectedEndpoints.clear()
-        pendingConnections.values.forEach { it.complete(Result.failure(IllegalStateException("Transport stopped"))) }
+        pendingConnections.values.forEach {
+            it.complete(Result.failure(IllegalStateException("Transport stopped")))
+        }
         pendingConnections.clear()
         _discoveredNodes.value = emptyList()
         _linkState.value = LinkState.OFFLINE
@@ -372,7 +358,3 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         private val STRATEGY = Strategy.P2P_CLUSTER
     }
 }
-
-/* Small aliases keep the transport source independent of the exact Flow extension imports. */
-private fun <T> kotlinx.coroutines.flow.MutableStateFlow<T>.asStateFlowCompat() = asStateFlow()
-private fun <T> kotlinx.coroutines.flow.MutableSharedFlow<T>.asSharedFlowCompat() = asSharedFlow()
