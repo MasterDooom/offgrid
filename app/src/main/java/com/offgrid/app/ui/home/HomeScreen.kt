@@ -90,12 +90,12 @@ fun HomeScreen(
             if (nodes.isEmpty()) {
                 item { EmptyNearbyCard(transportStatus) }
             }
-            items(nodes, key = { it.id }) { node ->
+            items(nodes, key = { "node:${it.id}" }) { node ->
                 NearbyRow(node) { onSelectNode(node) }
             }
             if (recent.isNotEmpty()) {
                 item { Text("Recent conversations", style = MaterialTheme.typography.titleMedium) }
-                items(recent, key = { it.id }) { conversation ->
+                items(recent, key = { "conversation:${it.id}" }) { conversation ->
                     RecentConversationRow(conversation) { onOpenConversation(conversation.peer) }
                 }
             }
