@@ -43,6 +43,7 @@ fun ChatScreen(
     node: Node,
     messages: List<Message>,
     selfId: String,
+    canSend: Boolean,
     onBack: () -> Unit,
     onSend: (String) -> Unit,
 ) {
@@ -59,7 +60,10 @@ fun ChatScreen(
                 title = {
                     Column {
                         Text(node.name, style = MaterialTheme.typography.titleMedium)
-                        Text("● " + node.status.name.lowercase().replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            "● " + node.status.name.lowercase().replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                 },
                 navigationIcon = { IconButton(onClick = onBack) { Text("←", style = MaterialTheme.typography.titleLarge) } },
@@ -67,6 +71,14 @@ fun ChatScreen(
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            if (!canSend) {
+                Text(
+                    "Link unavailable — return to Nearby and select the device again.",
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
@@ -85,11 +97,12 @@ fun ChatScreen(
                     onValueChange = { draft = it },
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Type a message…") },
+                    enabled = canSend,
                     maxLines = 4,
                 )
                 Button(
                     onClick = { if (draft.isNotBlank()) { onSend(draft); draft = "" } },
-                    enabled = draft.isNotBlank(),
+                    enabled = canSend && draft.isNotBlank(),
                 ) { Text("Send") }
             }
         }
