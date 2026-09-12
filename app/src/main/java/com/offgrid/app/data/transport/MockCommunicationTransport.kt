@@ -31,11 +31,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.coroutines.resume
 
 /** Real phone-to-phone Nearby Connections transport used by the prototype. */
 class MockCommunicationTransport(private val context: Context) : CommunicationTransport {
@@ -242,8 +240,19 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             return@withLock Result.failure(IllegalArgumentException("Message is too large"))
         }
 
+        // Nearby's sendPayload already returns an asynchronous Task. Keep the send path simple:
+        // enqueue the bytes and report the actual transfer result through the payload callback.
         try {
-            awaitTask(client.sendPayload(endpointId, Payload.fromBytes(bytes)))
+            client.sendPayload(endpointId, Payload.fromBytes(bytes))
+                .addOnSuccessListener {
+                    _transportStatus.value = "Message delivered"
+                    Log.d(TAG, "Payload delivered to $endpointId")
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "sendPayload failed for $endpointId", error)
+                    _transportStatus.value = "Message failed: ${errorMessage(error)}"
+                }
+            _transportStatus.value = "Sending to ${endpointNames[endpointId] ?: "device"}…"
             Result.success(Unit)
         } catch (error: Throwable) {
             Log.e(TAG, "sendMessage failed for $endpointId", error)
@@ -384,17 +393,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         }
     }
 
-    private suspend fun awaitTask(task: com.google.android.gms.tasks.Task<Void>): Unit =
-        withTimeout(PAYLOAD_TIMEOUT_MS) {
-            suspendCancellableCoroutine { continuation ->
-                task.addOnSuccessListener {
-                    if (continuation.isActive) continuation.resume(Unit)
-                }.addOnFailureListener { error ->
-                    if (continuation.isActive) continuation.resumeWith(Result.failure(error))
-                }
-            }
-        }
-
     override fun stop() {
         if (!started) return
         started = false
@@ -418,7 +416,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         private const val TAG = "OffGridNearby"
         private const val SERVICE_ID = "com.offgrid.app.offline"
         private const val CONNECTION_TIMEOUT_MS = 10_000L
-        private const val PAYLOAD_TIMEOUT_MS = 10_000L
         private const val MAX_MESSAGE_BYTES = 8_192
         private val STRATEGY = Strategy.P2P_CLUSTER
     }
