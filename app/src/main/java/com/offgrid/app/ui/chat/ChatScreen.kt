@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -68,7 +68,11 @@ fun ChatScreen(
                         )
                     }
                 },
-                navigationIcon = { IconButton(onClick = onBack) { Text("←", style = MaterialTheme.typography.titleLarge) } },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Text("←", style = MaterialTheme.typography.titleLarge)
+                    }
+                },
             )
         },
     ) { padding ->
@@ -81,14 +85,20 @@ fun ChatScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
             ) {
-                items(messages, key = { it.id }) { message -> MessageBubble(message, selfId) }
+                // Use the position as part of the key as a final guard against a malformed
+                // duplicate payload crashing Compose's lazy list.
+                itemsIndexed(messages, key = { index, message -> "${message.id}-$index" }) { _, message ->
+                    MessageBubble(message, selfId)
+                }
             }
+
             Row(
                 Modifier.fillMaxWidth().padding(12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -107,7 +117,7 @@ fun ChatScreen(
                         val text = draft.trim()
                         if (text.isNotEmpty()) {
                             draft = ""
-                            runCatching { onSend(text) }
+                            onSend(text)
                         }
                     },
                     enabled = canSend && draft.isNotBlank(),
@@ -120,15 +130,23 @@ fun ChatScreen(
 @Composable
 private fun MessageBubble(message: Message, selfId: String) {
     val fromMe = message.senderId == selfId
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromMe) Arrangement.End else Arrangement.Start) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (fromMe) Arrangement.End else Arrangement.Start,
+    ) {
         Surface(
             shape = RoundedCornerShape(16.dp),
-            color = if (fromMe) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceVariant,
+            color = if (fromMe) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+            else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = 280.dp),
         ) {
             Column(Modifier.padding(10.dp)) {
                 if (message.type == MessageType.EMERGENCY) {
-                    Text("🚨 EMERGENCY", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Text(
+                        "🚨 EMERGENCY",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
                 Text(message.content, textAlign = TextAlign.Start)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -136,7 +154,9 @@ private fun MessageBubble(message: Message, selfId: String) {
                         DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(message.timestamp)),
                         style = MaterialTheme.typography.labelSmall,
                     )
-                    if (fromMe) Text(statusLabel(message.status), style = MaterialTheme.typography.labelSmall)
+                    if (fromMe) {
+                        Text(statusLabel(message.status), style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
         }
