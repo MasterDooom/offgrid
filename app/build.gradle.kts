@@ -7,6 +7,7 @@ plugins {
 android {
     namespace = "com.offgrid.app"
     compileSdk = 35
+
     defaultConfig {
         applicationId = "com.offgrid.app"
         minSdk = 26
@@ -14,7 +15,21 @@ android {
         versionCode = 1
         versionName = "0.1.0"
     }
-    buildFeatures { compose = true; buildConfig = true }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    // Keep Java and Kotlin on the same JVM target.
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_22
+        targetCompatibility = JavaVersion.VERSION_22
+    }
+
+    kotlinOptions {
+        jvmTarget = "22"
+    }
 }
 
 dependencies {
