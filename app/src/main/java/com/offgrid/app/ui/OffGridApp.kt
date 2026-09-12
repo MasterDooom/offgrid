@@ -116,6 +116,7 @@ fun OffGridApp(
 
             is Screen.DemoSetup -> DemoSetupScreen(
                 identity = identity,
+                linkState = linkState,
                 onBack = { screen = Screen.Home },
                 onApply = { selfPort, peerHost, peerPort ->
                     identity.selfPort = selfPort
@@ -123,6 +124,17 @@ fun OffGridApp(
                     identity.peerPort = peerPort
                     transport.configurePorts(selfPort, peerHost, peerPort)
                     screen = Screen.Home
+                },
+                onTestConnection = {
+                    scope.launch {
+                        transport.connectToDevice(
+                            Node(
+                                id = MockCommunicationTransport.PEER_ID,
+                                name = "Linked Device",
+                                isSimulated = false,
+                            )
+                        )
+                    }
                 },
             )
         }
