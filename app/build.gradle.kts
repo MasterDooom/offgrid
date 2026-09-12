@@ -12,8 +12,8 @@ android {
         applicationId = "com.offgrid.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildFeatures {
@@ -21,7 +21,6 @@ android {
         buildConfig = true
     }
 
-    // Keep Java and Kotlin on the same JVM target.
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_22
         targetCompatibility = JavaVersion.VERSION_22
@@ -42,5 +41,6 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.google.android.gms:play-services-nearby:19.5.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

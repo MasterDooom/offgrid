@@ -1,4 +1,4 @@
-package com.offgrid.app
+package com.offgrid.app.legacy.wifidirect
 
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
