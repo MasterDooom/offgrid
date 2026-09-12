@@ -70,10 +70,8 @@ fun OffGridApp(
                 conversations = conversations,
                 onSelectNode = { node -> screen = Screen.Profile(node) },
                 onOpenConversation = { node ->
-                    scope.launch {
-                        val result = transport.connectToDevice(node)
-                        if (result.isSuccess) screen = Screen.Chat(node)
-                    }
+                    screen = Screen.Chat(node)
+                    scope.launch { transport.connectToDevice(node) }
                 },
                 onDiscover = { scope.launch { transport.discoverDevices() } },
                 onEmergency = { screen = Screen.Emergency },
@@ -86,10 +84,8 @@ fun OffGridApp(
                     node = liveNode,
                     onBack = { screen = Screen.Home },
                     onMessage = {
-                        scope.launch {
-                            val result = transport.connectToDevice(liveNode)
-                            if (result.isSuccess) screen = Screen.Chat(liveNode)
-                        }
+                        screen = Screen.Chat(liveNode)
+                        scope.launch { transport.connectToDevice(liveNode) }
                     },
                 )
             }
@@ -104,7 +100,16 @@ fun OffGridApp(
                     selfId = identity.nodeId,
                     canSend = canSend,
                     onBack = { screen = Screen.Home },
-                    onSend = { text -> scope.launch { messaging.send(liveNode, text) } },
+                    onSend = { text ->
+                        scope.launch {
+                            val connected = if (transport.linkState.value == LinkState.CONNECTED) {
+                                true
+                            } else {
+                                transport.connectToDevice(liveNode).isSuccess
+                            }
+                            if (connected) messaging.send(liveNode, text)
+                        }
+                    },
                 )
             }
 
