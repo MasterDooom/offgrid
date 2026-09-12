@@ -2,15 +2,15 @@ package com.offgrid.app.ui.chat
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
@@ -21,7 +21,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,13 +47,7 @@ fun ChatScreen(
     onSend: (String) -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            runCatching { listState.scrollToItem(messages.lastIndex) }
-        }
-    }
+    val scrollState = rememberScrollState()
 
     Scaffold(
         topBar = {
@@ -86,18 +79,28 @@ fun ChatScreen(
                 )
             }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-            ) {
-                // Use the position as part of the key as a final guard against a malformed
-                // duplicate payload crashing Compose's lazy list.
-                itemsIndexed(messages, key = { index, message -> "${message.id}-$index" }) { _, message ->
-                    MessageBubble(message, selfId)
-                }
-            }
+                content = {
+                    if (messages.isEmpty()) {
+                        Text(
+                            "No messages yet. Say hello.",
+                            modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        messages.forEach { message ->
+                            MessageBubble(message, selfId)
+                        }
+                    }
+                },
+            )
 
             Row(
                 Modifier.fillMaxWidth().padding(12.dp),
@@ -115,7 +118,7 @@ fun ChatScreen(
                 Button(
                     onClick = {
                         val text = draft.trim()
-                        if (text.isNotEmpty()) {
+                        if (text.isNotEmpty() && canSend) {
                             draft = ""
                             onSend(text)
                         }
@@ -150,10 +153,12 @@ private fun MessageBubble(message: Message, selfId: String) {
                 }
                 Text(message.content, textAlign = TextAlign.Start)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(message.timestamp)),
-                        style = MaterialTheme.typography.labelSmall,
-                    )
+                    val time = runCatching {
+                        DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(message.timestamp))
+                    }.getOrDefault("")
+                    if (time.isNotEmpty()) {
+                        Text(time, style = MaterialTheme.typography.labelSmall)
+                    }
                     if (fromMe) {
                         Text(statusLabel(message.status), style = MaterialTheme.typography.labelSmall)
                     }
