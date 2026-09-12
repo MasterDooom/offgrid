@@ -1,6 +1,8 @@
 package com.offgrid.app.data.transport
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
@@ -38,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap
 /** Real phone-to-phone Nearby Connections transport used by the prototype. */
 class MockCommunicationTransport(private val context: Context) : CommunicationTransport {
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile private var selfId = ""
     @Volatile private var selfName = ""
@@ -65,18 +68,17 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     private val connectionCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             safeCallback("connection initiated") {
-                endpointNames[endpointId] = connectionInfo.endpointName
-                upsertNode(endpointId, connectionInfo.endpointName, NodeStatus.CONNECTING)
-                _transportStatus.value = "Connecting to ${connectionInfo.endpointName}…"
-                try {
+                if (endpointId.isBlank()) return@safeCallback
+                endpointNames[endpointId] = connectionInfo.endpointName.ifBlank { "OFFGRID device" }
+                upsertNode(endpointId, endpointNames[endpointId]!!, NodeStatus.CONNECTING)
+                _transportStatus.value = "Connecting to ${endpointNames[endpointId]}…"
+
+                // Nearby requires both sides to accept before a connection is established.
+                // Accepting here is deliberate for the review/demo prototype.
+                runCatching {
                     client.acceptConnection(endpointId, payloadCallback)
-                        .addOnSuccessListener { Log.d(TAG, "Accepted $endpointId") }
-                        .addOnFailureListener { error ->
-                            Log.e(TAG, "Accept failed: $endpointId", error)
-                            _transportStatus.value = "Accept failed: ${errorMessage(error)}"
-                            pendingConnections.remove(endpointId)?.complete(Result.failure(error))
-                        }
-                } catch (error: Throwable) {
+                }.onFailure { error ->
+                    Log.e(TAG, "acceptConnection failed: $endpointId", error)
                     pendingConnections.remove(endpointId)?.complete(Result.failure(error))
                     _transportStatus.value = "Accept failed: ${errorMessage(error)}"
                 }
@@ -90,17 +92,18 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                     connectedEndpoints.add(endpointId)
                     val name = endpointNames[endpointId] ?: "OFFGRID device"
                     upsertNode(endpointId, name, NodeStatus.CONNECTED)
-                    _transportStatus.value = "Connected to $name"
                     pendingConnections.remove(endpointId)?.complete(Result.success(Unit))
                     refreshLinkState()
-                    Log.d(TAG, "Connected: $endpointId")
+                    _transportStatus.value = "Connected to $name"
+                    Log.d(TAG, "Connected endpoint=$endpointId name=$name")
                 } else {
                     connectedEndpoints.remove(endpointId)
-                    upsertNode(endpointId, endpointNames[endpointId] ?: "OFFGRID device", NodeStatus.AVAILABLE)
+                    val name = endpointNames[endpointId] ?: "OFFGRID device"
+                    upsertNode(endpointId, name, NodeStatus.AVAILABLE)
                     val message = "${ConnectionsStatusCodes.getStatusCodeString(code)} ($code)"
                     pendingConnections.remove(endpointId)?.complete(Result.failure(IllegalStateException(message)))
-                    _transportStatus.value = "Connection failed: $message"
                     refreshLinkState()
+                    _transportStatus.value = "Connection failed: $message"
                 }
             }
         }
@@ -108,12 +111,14 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         override fun onDisconnected(endpointId: String) {
             safeCallback("disconnect") {
                 connectedEndpoints.remove(endpointId)
-                pendingConnections.remove(endpointId)?.complete(Result.failure(IllegalStateException("Device disconnected")))
+                pendingConnections.remove(endpointId)?.complete(
+                    Result.failure(IllegalStateException("Device disconnected"))
+                )
                 _discoveredNodes.value = _discoveredNodes.value.map {
                     if (it.id == endpointId) it.copy(status = NodeStatus.AVAILABLE) else it
                 }
-                _transportStatus.value = "Device disconnected"
                 refreshLinkState()
+                _transportStatus.value = "Device disconnected"
             }
         }
     }
@@ -122,11 +127,16 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             safeCallback("endpoint found") {
                 if (endpointId.isBlank()) return@safeCallback
-                endpointNames[endpointId] = info.endpointName
-                val status = if (connectedEndpoints.contains(endpointId)) NodeStatus.CONNECTED else NodeStatus.AVAILABLE
-                upsertNode(endpointId, info.endpointName.ifBlank { "OFFGRID device" }, status)
-                _transportStatus.value = "Found ${info.endpointName}"
-                Log.d(TAG, "FOUND endpoint=$endpointId name=${info.endpointName}")
+                val name = info.endpointName.ifBlank { "OFFGRID device" }
+                endpointNames[endpointId] = name
+                val status = if (connectedEndpoints.contains(endpointId)) {
+                    NodeStatus.CONNECTED
+                } else {
+                    NodeStatus.AVAILABLE
+                }
+                upsertNode(endpointId, name, status)
+                _transportStatus.value = "Found $name"
+                Log.d(TAG, "FOUND endpoint=$endpointId name=$name")
             }
         }
 
@@ -144,19 +154,21 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 if (payload.type != Payload.Type.BYTES) return@safeCallback
                 val bytes = payload.asBytes() ?: return@safeCallback
                 if (bytes.isEmpty() || bytes.size > MAX_MESSAGE_BYTES) return@safeCallback
-                decodeAndEmit(endpointId, bytes)
+
+                // Deliver onto the main thread rather than mutating/collecting app state directly
+                // inside a Google Play services callback.
+                mainHandler.post {
+                    safeCallback("deliver received message") {
+                        decodeAndEmit(endpointId, bytes)
+                    }
+                }
             }
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            safeCallback("payload transfer update") {
-                when (update.status) {
-                    PayloadTransferUpdate.Status.SUCCESS -> _transportStatus.value = "Message delivered"
-                    PayloadTransferUpdate.Status.FAILURE,
-                    PayloadTransferUpdate.Status.CANCELED -> _transportStatus.value = "Message transfer failed"
-                    else -> Unit
-                }
-            }
+            // BYTES payloads are complete when onPayloadReceived() fires. Keep this callback
+            // deliberately side-effect-free so transfer callbacks can never destabilize Compose.
+            Log.d(TAG, "Payload update endpoint=$endpointId payload=${update.payloadId} status=${update.status}")
         }
     }
 
@@ -200,9 +212,11 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         try {
             client.requestConnection(selfName, endpointId, connectionCallback)
                 .addOnFailureListener { error ->
-                    pendingConnections.remove(endpointId)?.complete(Result.failure(error))
-                    upsertNode(endpointId, node.name, NodeStatus.AVAILABLE)
-                    _transportStatus.value = "Connection request failed: ${errorMessage(error)}"
+                    safeCallback("connection request failure") {
+                        pendingConnections.remove(endpointId)?.complete(Result.failure(error))
+                        upsertNode(endpointId, node.name, NodeStatus.AVAILABLE)
+                        _transportStatus.value = "Connection request failed: ${errorMessage(error)}"
+                    }
                 }
         } catch (error: Throwable) {
             pendingConnections.remove(endpointId)?.complete(Result.failure(error))
@@ -226,9 +240,13 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
 
     override suspend fun sendMessage(message: Message): Result<Unit> = sendMutex.withLock {
         val endpointId = message.receiverId
-        if (endpointId.isBlank()) return@withLock Result.failure(IllegalStateException("Missing recipient"))
+        if (endpointId.isBlank()) {
+            return@withLock Result.failure(IllegalStateException("Missing recipient"))
+        }
         if (!connectedEndpoints.contains(endpointId)) {
-            return@withLock Result.failure(IllegalStateException("Not connected to ${endpointNames[endpointId] ?: "device"}"))
+            return@withLock Result.failure(
+                IllegalStateException("Not connected to ${endpointNames[endpointId] ?: "device"}")
+            )
         }
 
         val bytes = try {
@@ -240,22 +258,15 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             return@withLock Result.failure(IllegalArgumentException("Message is too large"))
         }
 
-        // Nearby's sendPayload already returns an asynchronous Task. Keep the send path simple:
-        // enqueue the bytes and report the actual transfer result through the payload callback.
         try {
+            // No coroutine bridge and no UI work in the Google Task callback. Nearby accepts
+            // this byte payload and invokes PayloadCallback on the receiving endpoint.
             client.sendPayload(endpointId, Payload.fromBytes(bytes))
-                .addOnSuccessListener {
-                    _transportStatus.value = "Message delivered"
-                    Log.d(TAG, "Payload delivered to $endpointId")
-                }
-                .addOnFailureListener { error ->
-                    Log.e(TAG, "sendPayload failed for $endpointId", error)
-                    _transportStatus.value = "Message failed: ${errorMessage(error)}"
-                }
-            _transportStatus.value = "Sending to ${endpointNames[endpointId] ?: "device"}…"
+            Log.d(TAG, "Payload queued for endpoint=$endpointId")
+            _transportStatus.value = "Message sent"
             Result.success(Unit)
         } catch (error: Throwable) {
-            Log.e(TAG, "sendMessage failed for $endpointId", error)
+            Log.e(TAG, "sendPayload threw for endpoint=$endpointId", error)
             _transportStatus.value = "Message failed: ${errorMessage(error)}"
             Result.failure(error)
         }
@@ -308,7 +319,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     }
 
     private fun stopDiscoverySafely() {
-        try { client.stopDiscovery() } catch (_: Throwable) { }
+        runCatching { client.stopDiscovery() }
         discoveryRunning = false
     }
 
@@ -317,14 +328,17 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             block()
         } catch (error: Throwable) {
             Log.e(TAG, "$operation callback failed", error)
-            _transportStatus.value = "$operation failed: ${errorMessage(error)}"
+            runCatching { _transportStatus.value = "$operation failed: ${errorMessage(error)}" }
         }
     }
 
     private fun errorMessage(error: Throwable): String {
         val code = (error as? ApiException)?.statusCode
-        return if (code != null) "${ConnectionsStatusCodes.getStatusCodeString(code)} ($code)"
-        else error.message ?: error.javaClass.simpleName
+        return if (code != null) {
+            "${ConnectionsStatusCodes.getStatusCodeString(code)} ($code)"
+        } else {
+            error.message ?: error.javaClass.simpleName
+        }
     }
 
     private fun decodeAndEmit(endpointId: String, bytes: ByteArray) {
@@ -333,10 +347,13 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             if (json.optString("kind") != "MESSAGE") return
             val content = json.optString("content")
             if (content.isBlank()) return
-            val messageId = json.optString("id").ifBlank { "rx-$endpointId-${System.nanoTime()}" }
+
+            val messageId = json.optString("id")
+                .ifBlank { "rx-$endpointId-${System.nanoTime()}" }
             val type = runCatching {
                 MessageType.valueOf(json.optString("type", MessageType.TEXT.name))
             }.getOrDefault(MessageType.TEXT)
+
             _incoming.tryEmit(
                 Message(
                     id = messageId,
@@ -403,7 +420,9 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         discoveryRunning = false
         connectedEndpoints.clear()
         pendingConnections.values.forEach { deferred ->
-            runCatching { deferred.complete(Result.failure(IllegalStateException("Transport stopped"))) }
+            runCatching {
+                deferred.complete(Result.failure(IllegalStateException("Transport stopped")))
+            }
         }
         pendingConnections.clear()
         endpointNames.clear()
