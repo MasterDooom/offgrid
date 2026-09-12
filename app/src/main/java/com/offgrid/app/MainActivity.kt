@@ -8,15 +8,16 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.offgrid.app.data.repository.EmergencyRepository
 import com.offgrid.app.data.repository.IdentityManager
 import com.offgrid.app.data.repository.MessagingRepository
 import com.offgrid.app.data.transport.MockCommunicationTransport
 import com.offgrid.app.ui.OffGridApp
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var identity: IdentityManager
@@ -47,10 +48,6 @@ class MainActivity : ComponentActivity() {
             val messaging = remember { MessagingRepository(transport, identity.nodeId, scope) }
             val emergency = remember { EmergencyRepository(transport, messaging, identity.nodeId) }
 
-            LaunchedEffect(Unit) {
-                // Transport startup is triggered after the Android nearby permissions are granted.
-            }
-
             OffGridApp(
                 identity = identity,
                 transport = transport,
@@ -59,17 +56,12 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        if (hasNearbyPermissions()) {
-            startTransport()
-        } else {
-            permissionLauncher.launch(requiredPermissions())
-        }
+        if (hasNearbyPermissions()) startTransport()
+        else permissionLauncher.launch(requiredPermissions())
     }
 
     private fun startTransport() {
-        // Nearby Connections is a real device-to-device transport. It uses Bluetooth/BLE and
-        // Wi-Fi-capable peer-to-peer links; no internet server is involved in the message path.
-        lifecycleScope.launchWhenStarted {
+        lifecycleScope.launch {
             transport.start(identity.nodeId, identity.displayName)
         }
     }
