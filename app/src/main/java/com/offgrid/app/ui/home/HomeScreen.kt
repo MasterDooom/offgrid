@@ -15,10 +15,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -43,10 +45,13 @@ fun HomeScreen(
     conversations: Map<String, Conversation>,
     onSelectNode: (Node) -> Unit,
     onOpenConversation: (Node) -> Unit,
+    onDiscover: () -> Unit,
     onEmergency: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    val recent = conversations.values.filter { it.lastMessage != null }.sortedByDescending { it.lastMessage!!.timestamp }
+    val recent = conversations.values
+        .filter { it.lastMessage != null }
+        .sortedByDescending { it.lastMessage!!.timestamp }
 
     Scaffold(
         topBar = {
@@ -71,7 +76,16 @@ fun HomeScreen(
         ) {
             item { IdentityCard(identity, nodes.count { it.status != NodeStatus.OFFLINE }, linkState) }
             item { EmergencyEntry(onEmergency) }
-            item { Text("Nearby", style = MaterialTheme.typography.titleMedium) }
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Nearby", style = MaterialTheme.typography.titleMedium)
+                    OutlinedButton(onClick = onDiscover) { Text("Scan") }
+                }
+            }
             items(nodes, key = { it.id }) { node -> NearbyRow(node) { onSelectNode(node) } }
             if (recent.isNotEmpty()) {
                 item { Text("Recent conversations", style = MaterialTheme.typography.titleMedium) }
@@ -139,11 +153,7 @@ private fun RecentConversationRow(conversation: Conversation, onClick: () -> Uni
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(14.dp)) {
             Text(conversation.peer.name, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                conversation.lastMessage?.content.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-            )
+            Text(conversation.lastMessage?.content.orEmpty(), style = MaterialTheme.typography.bodySmall, maxLines = 1)
         }
     }
 }
