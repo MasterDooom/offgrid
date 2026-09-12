@@ -7,22 +7,27 @@ plugins {
 android {
     namespace = "com.offgrid.app"
     compileSdk = 35
+
     defaultConfig {
         applicationId = "com.offgrid.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
-    buildFeatures { compose = true; buildConfig = true }
 
-    // Keep Java and Kotlin bytecode targets identical so the project builds consistently.
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+    buildFeatures {
+        compose = true
+        buildConfig = true
     }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_22
+        targetCompatibility = JavaVersion.VERSION_22
+    }
+
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "22"
     }
 }
 
@@ -36,5 +41,6 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.google.android.gms:play-services-nearby:19.5.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
