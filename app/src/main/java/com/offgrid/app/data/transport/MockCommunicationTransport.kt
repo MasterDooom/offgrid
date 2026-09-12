@@ -70,7 +70,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 endpointNames[endpointId] = connectionInfo.endpointName
                 upsertNode(endpointId, connectionInfo.endpointName, NodeStatus.CONNECTING)
                 _transportStatus.value = "Connecting to ${connectionInfo.endpointName}…"
-
                 try {
                     client.acceptConnection(endpointId, payloadCallback)
                         .addOnSuccessListener { Log.d(TAG, "Accepted $endpointId") }
@@ -245,6 +244,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
 
         try {
             awaitTask(client.sendPayload(endpointId, Payload.fromBytes(bytes)))
+            Result.success(Unit)
         } catch (error: Throwable) {
             Log.e(TAG, "sendMessage failed for $endpointId", error)
             _transportStatus.value = "Message failed: ${errorMessage(error)}"
@@ -325,7 +325,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             val content = json.optString("content")
             if (content.isBlank()) return
             val messageId = json.optString("id").ifBlank { "rx-$endpointId-${System.nanoTime()}" }
-            val senderName = endpointNames[endpointId] ?: "OFFGRID device"
             val type = runCatching {
                 MessageType.valueOf(json.optString("type", MessageType.TEXT.name))
             }.getOrDefault(MessageType.TEXT)
@@ -341,7 +340,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                     type = type,
                 )
             )
-            _transportStatus.value = "Message received from $senderName"
+            _transportStatus.value = "Message received from ${endpointNames[endpointId] ?: "OFFGRID device"}"
         } catch (error: Throwable) {
             Log.w(TAG, "Invalid message payload from $endpointId", error)
         }
