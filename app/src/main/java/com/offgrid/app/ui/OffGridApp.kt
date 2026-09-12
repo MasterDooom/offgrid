@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -11,6 +12,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import com.offgrid.app.data.model.LinkState
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.repository.EmergencyRepository
 import com.offgrid.app.data.repository.IdentityManager
@@ -66,20 +69,27 @@ fun OffGridApp(
                 linkState = linkState,
                 conversations = conversations,
                 onSelectNode = { node -> screen = Screen.Profile(node) },
-                onOpenConversation = { node -> screen = Screen.Chat(node) },
+                onOpenConversation = { node ->
+                    scope.launch {
+                        transport.connectToDevice(node)
+                        screen = Screen.Chat(node)
+                    }
+                },
+                onDiscover = { scope.launch { transport.discoverDevices() } },
                 onEmergency = { screen = Screen.Emergency },
                 onOpenSettings = { screen = Screen.DemoSetup },
             )
 
             is Screen.Profile -> {
-                // Keep the header live if the node's status/name changed since we navigated here.
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 ProfileScreen(
                     node = liveNode,
                     onBack = { screen = Screen.Home },
                     onMessage = {
-                        scope.launch { transport.connectToDevice(liveNode) }
-                        screen = Screen.Chat(liveNode)
+                        scope.launch {
+                            transport.connectToDevice(liveNode)
+                            screen = Screen.Chat(liveNode)
+                        }
                     },
                 )
             }
@@ -87,10 +97,12 @@ fun OffGridApp(
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 val conversation = conversations[liveNode.id]
+                val canSend = liveNode.isSimulated || linkState == LinkState.CONNECTED
                 ChatScreen(
                     node = liveNode,
                     messages = conversation?.messages ?: emptyList(),
                     selfId = identity.nodeId,
+                    canSend = canSend,
                     onBack = { screen = Screen.Home },
                     onSend = { text -> scope.launch { messaging.send(liveNode, text) } },
                 )
