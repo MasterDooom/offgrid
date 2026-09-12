@@ -64,7 +64,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             Log.d(TAG, "Connection initiated: ${connectionInfo.endpointName} ($endpointId)")
             _transportStatus.value = "Connection request from ${connectionInfo.endpointName}"
-            // Demo mode: automatically accept so the judge demo is one tap.
             client.acceptConnection(endpointId, payloadCallback)
                 .addOnFailureListener { error ->
                     Log.e(TAG, "Accept failed", error)
@@ -112,7 +111,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             Log.d(TAG, "FOUND endpoint=$endpointId name=${info.endpointName}")
             _transportStatus.value = "Found ${info.endpointName}"
 
-            // Keep the endpoint ID until the peer sends its OFFGRID identity payload.
             endpointToNodeId.putIfAbsent(endpointId, endpointId)
             upsertNode(
                 Node(
@@ -124,9 +122,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                     capabilities = setOf(DeviceCapability.MESSAGING),
                 )
             )
-
-            // IMPORTANT: discovery does not automatically connect. The user selects a device,
-            // then the Profile screen calls connectToDevice(). This matches the intended UX.
         }
 
         override fun onEndpointLost(endpointId: String) {
@@ -168,8 +163,6 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             return
         }
 
-        // A scan button should actually restart discovery instead of hitting
-        // STATUS_ALREADY_DISCOVERING on an already-running scan.
         client.stopDiscovery()
         _transportStatus.value = "Scanning for nearby OFFGRID devices…"
         startDiscovery()
@@ -197,8 +190,13 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     }
 
     override suspend fun sendMessage(message: Message): Result<Unit> {
+        // After connecting, the HELLO packet normally maps the stable node ID to the
+        // Nearby endpoint ID. Do not require that asynchronous packet to arrive before
+        // allowing the first message to be sent: a Node discovered directly already has
+        // the endpoint ID, and that ID is valid while the endpoint is connected.
         val endpointId = nodeIdToEndpoint[message.receiverId]
             ?: endpointToNodeId.entries.firstOrNull { it.value == message.receiverId }?.key
+            ?: message.receiverId.takeIf { connectedEndpoints.contains(it) }
             ?: return Result.failure(IllegalStateException("No live connection to ${message.receiverId}"))
 
         if (!connectedEndpoints.contains(endpointId)) {
