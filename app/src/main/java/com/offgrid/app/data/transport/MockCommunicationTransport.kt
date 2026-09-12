@@ -188,12 +188,17 @@ class MockCommunicationTransport(
         }
     }
 
-    private suspend fun sendHello(expectReply: Boolean) = withContext(Dispatchers.IO) {
-        writer?.apply {
-            write(JSONObject().apply {
-                put("kind", "HELLO"); put("nodeId", selfId); put("name", selfName); put("reply", expectReply)
+    private suspend fun sendHello(expectReply: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val out = checkNotNull(writer) { "Not connected to the linked device yet" }
+            out.write(JSONObject().apply {
+                put("kind", "HELLO")
+                put("nodeId", selfId)
+                put("name", selfName)
+                put("reply", expectReply)
             }.toString())
-            newLine(); flush()
+            out.newLine()
+            out.flush()
         }
     }
 
