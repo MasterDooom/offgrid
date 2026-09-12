@@ -51,7 +51,9 @@ fun ChatScreen(
     val listState = rememberLazyListState()
 
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+        if (messages.isNotEmpty()) {
+            runCatching { listState.scrollToItem(messages.lastIndex) }
+        }
     }
 
     Scaffold(
@@ -68,14 +70,14 @@ fun ChatScreen(
                 },
                 navigationIcon = { IconButton(onClick = onBack) { Text("←", style = MaterialTheme.typography.titleLarge) } },
             )
-        }
+        },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             if (!canSend) {
                 Text(
-                    "Link unavailable — return to Nearby and select the device again.",
+                    "Connecting to ${node.name}…",
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.error,
+                    color = MaterialTheme.colorScheme.primary,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -101,7 +103,13 @@ fun ChatScreen(
                     maxLines = 4,
                 )
                 Button(
-                    onClick = { if (draft.isNotBlank()) { onSend(draft); draft = "" } },
+                    onClick = {
+                        val text = draft.trim()
+                        if (text.isNotEmpty()) {
+                            draft = ""
+                            runCatching { onSend(text) }
+                        }
+                    },
                     enabled = canSend && draft.isNotBlank(),
                 ) { Text("Send") }
             }
