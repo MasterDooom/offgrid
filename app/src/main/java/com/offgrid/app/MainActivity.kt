@@ -8,8 +8,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.offgrid.app.data.repository.EmergencyRepository
@@ -44,9 +42,14 @@ class MainActivity : ComponentActivity() {
         transport = MockCommunicationTransport(applicationContext)
 
         setContent {
-            val scope = rememberCoroutineScope()
-            val messaging = remember { MessagingRepository(transport, identity.nodeId, scope) }
-            val emergency = remember { EmergencyRepository(transport, messaging, identity.nodeId) }
+            // Keep repository collection on the Activity lifecycle rather than a composable
+            // scope. Messaging must continue receiving packets while screens change.
+            val messaging = androidx.compose.runtime.remember {
+                MessagingRepository(transport, identity.nodeId, lifecycleScope)
+            }
+            val emergency = androidx.compose.runtime.remember {
+                EmergencyRepository(transport, messaging, identity.nodeId)
+            }
 
             OffGridApp(
                 identity = identity,
