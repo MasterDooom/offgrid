@@ -31,19 +31,16 @@ import java.net.ServerSocket
 import java.net.Socket
 
 /**
- * Demo transport: two real running app instances (two emulators, or one emulator + one physical
- * device on the same Wi-Fi) exchange newline-delimited JSON over a plain TCP socket. Android
- * emulators have no real Wi-Fi/BLE radio to each other, but every guest can reach the shared
- * host machine at 10.0.2.2 — so each instance runs a TCP server, and `adb forward` bridges the
- * host port into that instance's guest port so the *other* emulator can dial in. See README for
- * the exact adb commands. This is genuine socket I/O between two processes, not a local fake.
+ * Demo transport: two real running app instances exchange newline-delimited JSON over a TCP socket.
+ * Android emulators can reach the host machine at 10.0.2.2; adb forwarding then bridges a unique
+ * host port to each emulator's listening port. This is genuine socket I/O, not a local fake.
  *
- * A few extra Node entries are marked isSimulated = true purely so the Nearby list has texture
- * on a single emulator; messaging them is answered by a canned local reply, clearly not network
- * traffic. The one non-simulated node ("Linked Device") is the real peer.
+ * A few simulated nodes keep the Nearby screen useful on one emulator. The linked device is the
+ * only non-simulated peer. The stable local peer key is intentionally kept as PEER_ID so the chat
+ * history does not jump to a different conversation key after the HELLO handshake.
  *
- * Swap-in point for real hardware: write MeshtasticCommunicationTransport implementing this same
- * interface against a Meshtastic radio (BLE/serial). Nothing else in the app changes.
+ * Swap-in point for real hardware: implement MeshtasticCommunicationTransport against BLE/serial
+ * while keeping CommunicationTransport unchanged.
  */
 class MockCommunicationTransport(
     private var selfPort: Int = DEFAULT_SELF_PORT,
@@ -73,7 +70,6 @@ class MockCommunicationTransport(
         startServer()
     }
 
-    /** Called from the Demo Setup screen when the user picks/edits ports for this instance. */
     fun configurePorts(selfPort: Int, peerHost: String, peerPort: Int) {
         this.selfPort = selfPort
         this.peerHost = peerHost
@@ -83,8 +79,6 @@ class MockCommunicationTransport(
     }
 
     override suspend fun discoverDevices() {
-        // Nothing to actively scan for over TCP; the simulated roster is always "nearby" and the
-        // real peer becomes CONNECTED once connectToDevice()/an inbound socket succeeds.
         _discoveredNodes.value = _discoveredNodes.value.map {
             if (it.isSimulated) it.copy(lastSeen = System.currentTimeMillis()) else it
         }
@@ -105,7 +99,7 @@ class MockCommunicationTransport(
             val client = Socket()
             client.connect(InetSocketAddress(peerHost, peerPort), CONNECT_TIMEOUT_MS)
             attach(client)
-            sendHello(expectReply = true)
+            sendHello(expectReply = true).getOrThrow()
         }.onFailure {
             Log.w(TAG, "Connect to $peerHost:$peerPort failed", it)
             updateNode(PEER_ID) { it.copy(status = NodeStatus.OFFLINE) }
@@ -206,12 +200,14 @@ class MockCommunicationTransport(
         val json = JSONObject(line)
         when (json.optString("kind")) {
             "HELLO" -> {
+                // Keep PEER_ID as the local conversation key; store the remote identity in the
+                // node's display name/status without replacing the key.
                 updateNode(PEER_ID) {
-                    it.copy(id = json.getString("nodeId"), name = json.getString("name"), status = NodeStatus.CONNECTED)
+                    it.copy(name = json.getString("name"), status = NodeStatus.CONNECTED)
                 }
                 if (json.optBoolean("reply", true)) scope.launch { sendHello(expectReply = false) }
             }
-            else -> scope.launch { _incoming.emit(jsonToMessage(json)) }
+            "MESSAGE" -> scope.launch { _incoming.emit(jsonToMessage(json)) }
         }
     }
 
@@ -229,11 +225,10 @@ class MockCommunicationTransport(
         put("type", message.type.name)
     }.toString()
 
-    /** The conversation, from the receiver's point of view, is keyed by who sent it — not by
-     * whatever local id the sender used to address them. */
     private fun jsonToMessage(json: JSONObject): Message = Message(
         id = json.getString("id"),
-        conversationId = json.getString("senderId"),
+        // PEER_ID is the stable local conversation key for the linked socket.
+        conversationId = PEER_ID,
         senderId = json.getString("senderId"),
         receiverId = json.getString("receiverId"),
         content = json.getString("content"),
