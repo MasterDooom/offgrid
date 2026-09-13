@@ -87,9 +87,15 @@ fun OffGridApp(
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 val conversation = conversations[liveNode.id]
-                ChatScreen(liveNode, conversation?.messages ?: emptyList(), identity.nodeId,
+                ChatScreen(
+                    liveNode,
+                    conversation?.messages ?: emptyList(),
+                    identity.nodeId,
                     canSend = liveNode.status == NodeStatus.CONNECTED && !liveNode.isSimulated,
-                    onBack = { screen = Screen.Home }, onSend = { safeLaunch { messaging.send(liveNode, it) } })
+                    onBack = { screen = Screen.Home },
+                    onSend = { safeLaunch { messaging.send(liveNode, it) } },
+                    transportStatus = transportStatus,
+                )
             }
             Screen.Network -> NetworkScreen(nodes, identity.nodeId, identity.displayName,
                 onBack = { screen = Screen.Home }, onSelectNode = { screen = Screen.Profile(it) })
