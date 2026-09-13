@@ -26,21 +26,40 @@ import com.offgrid.app.data.model.MessageStatus
 import com.offgrid.app.data.model.MessageType
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.model.NodeStatus
+import com.offgrid.app.data.security.HopEncryption
+import com.offgrid.app.data.security.HopPacket
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
-/** Real phone-to-phone Nearby Connections transport used by the prototype. */
+/**
+ * Real phone-to-phone Nearby Connections transport used by the prototype.
+ *
+ * The transport now adds a mesh-routing layer above Nearby Connections:
+ * 1. The message is encoded once as the inner message payload.
+ * 2. It is AES-GCM encrypted for the first physical hop.
+ * 3. A relay decrypts that hop, reads only the routing envelope, then encrypts the inner message
+ *    for the next hop and forwards it.
+ * 4. The destination finally decrypts and emits the message to MessagingRepository.
+ *
+ * This is hop-by-hop encryption, deliberately matching the current relay demonstration. It is
+ * not end-to-end encryption because a relay can decrypt the message while forwarding it.
+ */
 class MockCommunicationTransport(private val context: Context) : CommunicationTransport {
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var selfId = ""
     @Volatile private var selfName = ""
@@ -51,6 +70,9 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingConnections = ConcurrentHashMap<String, CompletableDeferred<Result<Unit>>>()
     private val endpointNames = ConcurrentHashMap<String, String>()
+    private val endpointLogicalIds = ConcurrentHashMap<String, String>()
+    private val logicalIdEndpoints = ConcurrentHashMap<String, String>()
+    private val seenPackets = ConcurrentHashMap.newKeySet<String>()
     private val sendMutex = Mutex()
 
     private val _discoveredNodes = MutableStateFlow<List<Node>>(emptyList())
@@ -69,19 +91,21 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             safeCallback("connection initiated") {
                 if (endpointId.isBlank()) return@safeCallback
-                endpointNames[endpointId] = connectionInfo.endpointName.ifBlank { "OFFGRID device" }
-                upsertNode(endpointId, endpointNames[endpointId]!!, NodeStatus.CONNECTING)
-                _transportStatus.value = "Connecting to ${endpointNames[endpointId]}…"
+                val name = displayNameFromAdvertisedName(connectionInfo.endpointName)
+                val logicalId = logicalIdFromAdvertisedName(connectionInfo.endpointName) ?: endpointId
+                endpointNames[endpointId] = name
+                endpointLogicalIds[endpointId] = logicalId
+                logicalIdEndpoints[logicalId] = endpointId
+                upsertNode(endpointId, name, NodeStatus.CONNECTING, logicalId)
+                _transportStatus.value = "Connecting to $name…"
 
                 // Nearby requires both sides to accept before a connection is established.
-                // Accepting here is deliberate for the review/demo prototype.
-                runCatching {
-                    client.acceptConnection(endpointId, payloadCallback)
-                }.onFailure { error ->
-                    Log.e(TAG, "acceptConnection failed: $endpointId", error)
-                    pendingConnections.remove(endpointId)?.complete(Result.failure(error))
-                    _transportStatus.value = "Accept failed: ${errorMessage(error)}"
-                }
+                runCatching { client.acceptConnection(endpointId, payloadCallback) }
+                    .onFailure { error ->
+                        Log.e(TAG, "acceptConnection failed: $endpointId", error)
+                        pendingConnections.remove(endpointId)?.complete(Result.failure(error))
+                        _transportStatus.value = "Accept failed: ${errorMessage(error)}"
+                    }
             }
         }
 
@@ -91,15 +115,16 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 if (code == ConnectionsStatusCodes.STATUS_OK) {
                     connectedEndpoints.add(endpointId)
                     val name = endpointNames[endpointId] ?: "OFFGRID device"
-                    upsertNode(endpointId, name, NodeStatus.CONNECTED)
+                    val logicalId = endpointLogicalIds[endpointId] ?: endpointId
+                    logicalIdEndpoints[logicalId] = endpointId
+                    upsertNode(endpointId, name, NodeStatus.CONNECTED, logicalId)
                     pendingConnections.remove(endpointId)?.complete(Result.success(Unit))
                     refreshLinkState()
-                    _transportStatus.value = "Connected to $name"
-                    Log.d(TAG, "Connected endpoint=$endpointId name=$name")
+                    _transportStatus.value = "Connected to $name • encrypted hop ready"
+                    Log.d(TAG, "Connected endpoint=$endpointId logicalId=$logicalId name=$name")
                 } else {
                     connectedEndpoints.remove(endpointId)
                     val name = endpointNames[endpointId] ?: "OFFGRID device"
-                    upsertNode(endpointId, name, NodeStatus.AVAILABLE)
                     val message = "${ConnectionsStatusCodes.getStatusCodeString(code)} ($code)"
                     pendingConnections.remove(endpointId)?.complete(Result.failure(IllegalStateException(message)))
                     refreshLinkState()
@@ -114,6 +139,8 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 pendingConnections.remove(endpointId)?.complete(
                     Result.failure(IllegalStateException("Device disconnected"))
                 )
+                val logicalId = endpointLogicalIds.remove(endpointId)
+                if (logicalId != null) logicalIdEndpoints.remove(logicalId, endpointId)
                 _discoveredNodes.value = _discoveredNodes.value.map {
                     if (it.id == endpointId) it.copy(status = NodeStatus.AVAILABLE) else it
                 }
@@ -127,16 +154,15 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             safeCallback("endpoint found") {
                 if (endpointId.isBlank()) return@safeCallback
-                val name = info.endpointName.ifBlank { "OFFGRID device" }
+                val name = displayNameFromAdvertisedName(info.endpointName)
+                val logicalId = logicalIdFromAdvertisedName(info.endpointName) ?: endpointId
                 endpointNames[endpointId] = name
-                val status = if (connectedEndpoints.contains(endpointId)) {
-                    NodeStatus.CONNECTED
-                } else {
-                    NodeStatus.AVAILABLE
-                }
-                upsertNode(endpointId, name, status)
+                endpointLogicalIds[endpointId] = logicalId
+                logicalIdEndpoints[logicalId] = endpointId
+                val status = if (connectedEndpoints.contains(endpointId)) NodeStatus.CONNECTED else NodeStatus.AVAILABLE
+                upsertNode(endpointId, name, status, logicalId)
                 _transportStatus.value = "Found $name"
-                Log.d(TAG, "FOUND endpoint=$endpointId name=$name")
+                Log.d(TAG, "FOUND endpoint=$endpointId logicalId=$logicalId name=$name")
             }
         }
 
@@ -154,20 +180,13 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 if (payload.type != Payload.Type.BYTES) return@safeCallback
                 val bytes = payload.asBytes() ?: return@safeCallback
                 if (bytes.isEmpty() || bytes.size > MAX_MESSAGE_BYTES) return@safeCallback
-
-                // Deliver onto the main thread rather than mutating/collecting app state directly
-                // inside a Google Play services callback.
                 mainHandler.post {
-                    safeCallback("deliver received message") {
-                        decodeAndEmit(endpointId, bytes)
-                    }
+                    safeCallback("deliver received message") { handlePayload(endpointId, bytes) }
                 }
             }
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // BYTES payloads are complete when onPayloadReceived() fires. Keep this callback
-            // deliberately side-effect-free so transfer callbacks can never destabilize Compose.
             Log.d(TAG, "Payload update endpoint=$endpointId payload=${update.payloadId} status=${update.status}")
         }
     }
@@ -200,83 +219,278 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         if (!started) start(selfId, selfName)
 
         pendingConnections[endpointId]?.let { return awaitConnection(endpointId, it) }
-
         val deferred = CompletableDeferred<Result<Unit>>()
         if (pendingConnections.putIfAbsent(endpointId, deferred) != null) {
             return awaitConnection(endpointId, pendingConnections[endpointId]!!)
         }
 
-        upsertNode(endpointId, node.name, NodeStatus.CONNECTING)
+        upsertNode(endpointId, node.name, NodeStatus.CONNECTING, node.logicalId)
+        endpointLogicalIds[endpointId] = node.logicalId
+        logicalIdEndpoints[node.logicalId] = endpointId
         _transportStatus.value = "Connecting to ${node.name}…"
 
         try {
-            client.requestConnection(selfName, endpointId, connectionCallback)
+            client.requestConnection(selfId + "|" + selfName, endpointId, connectionCallback)
                 .addOnFailureListener { error ->
                     safeCallback("connection request failure") {
                         pendingConnections.remove(endpointId)?.complete(Result.failure(error))
-                        upsertNode(endpointId, node.name, NodeStatus.AVAILABLE)
+                        upsertNode(endpointId, node.name, NodeStatus.AVAILABLE, node.logicalId)
                         _transportStatus.value = "Connection request failed: ${errorMessage(error)}"
                     }
                 }
         } catch (error: Throwable) {
             pendingConnections.remove(endpointId)?.complete(Result.failure(error))
-            upsertNode(endpointId, node.name, NodeStatus.AVAILABLE)
+            upsertNode(endpointId, node.name, NodeStatus.AVAILABLE, node.logicalId)
             return Result.failure(error)
         }
 
         return awaitConnection(endpointId, deferred)
     }
 
-    private suspend fun awaitConnection(
-        endpointId: String,
-        deferred: CompletableDeferred<Result<Unit>>,
-    ): Result<Unit> = try {
+    private suspend fun awaitConnection(endpointId: String, deferred: CompletableDeferred<Result<Unit>>): Result<Unit> = try {
         withTimeout(CONNECTION_TIMEOUT_MS) { deferred.await() }
     } catch (error: Throwable) {
         pendingConnections.remove(endpointId)?.complete(Result.failure(error))
-        upsertNode(endpointId, endpointNames[endpointId] ?: "OFFGRID device", NodeStatus.AVAILABLE)
+        upsertNode(endpointId, endpointNames[endpointId] ?: "OFFGRID device", NodeStatus.AVAILABLE, endpointLogicalIds[endpointId] ?: endpointId)
         Result.failure(error)
     }
 
     override suspend fun sendMessage(message: Message): Result<Unit> = sendMutex.withLock {
-        val endpointId = message.receiverId
-        if (endpointId.isBlank()) {
-            return@withLock Result.failure(IllegalStateException("Missing recipient"))
-        }
-        if (!connectedEndpoints.contains(endpointId)) {
-            return@withLock Result.failure(
-                IllegalStateException("Not connected to ${endpointNames[endpointId] ?: "device"}")
-            )
+        val destinationId = message.recipientNodeId ?: endpointLogicalIds[message.receiverId] ?: message.receiverId
+        if (destinationId.isBlank()) return@withLock Result.failure(IllegalStateException("Missing recipient"))
+
+        val directEndpoint = logicalIdEndpoints[destinationId]
+        val nextEndpoint = when {
+            directEndpoint != null && connectedEndpoints.contains(directEndpoint) -> directEndpoint
+            else -> chooseRelayEndpoint(destinationId)
         }
 
-        val bytes = try {
-            messageToJson(message).toByteArray(Charsets.UTF_8)
+        if (nextEndpoint == null) {
+            return@withLock Result.failure(IllegalStateException("No route to $destinationId"))
+        }
+
+        val nextHopId = endpointLogicalIds[nextEndpoint] ?: return@withLock Result.failure(
+            IllegalStateException("Unknown next hop")
+        )
+        val plaintext = messageToJson(message, destinationId).toByteArray(Charsets.UTF_8)
+        val packet = HopPacket(
+            messageId = message.id,
+            sourceNodeId = selfId,
+            destinationNodeId = destinationId,
+            previousHopId = selfId,
+            hopCount = 0,
+            maxHops = MAX_HOPS,
+            ciphertext = HopEncryption.encrypt(plaintext, HopEncryption.linkKey(selfId, nextHopId)),
+            path = listOf(selfId),
+        )
+
+        _transportStatus.value = if (nextHopId == destinationId) {
+            "Message encrypted • direct hop"
+        } else {
+            "Message encrypted • routing via ${nextHopId.takeLast(4)}"
+        }
+        sendToEndpoint(nextEndpoint, packet)
+    }
+
+    private fun chooseRelayEndpoint(destinationId: String): String? {
+        val candidates = connectedEndpoints
+            .asSequence()
+            .filter { endpointLogicalIds[it] != null }
+            .filter { endpointLogicalIds[it] != destinationId }
+            .filter { endpointLogicalIds[it] != selfId }
+            .filter { endpointLogicalIds[it] !in listOf(selfId, destinationId) }
+            .toList()
+        return candidates.firstOrNull { endpointLogicalIds[it] != null }
+    }
+
+    private fun handlePayload(endpointId: String, bytes: ByteArray) {
+        val packet = HopPacket.fromJson(bytes)
+        if (packet == null) {
+            // Backward compatibility with the original direct-message wire format.
+            decodeLegacyMessage(endpointId, bytes)
+            return
+        }
+
+        if (packet.messageId in seenPackets) return
+        if (packet.hopCount >= packet.maxHops) {
+            _transportStatus.value = "Route dropped • hop limit reached"
+            return
+        }
+
+        val previousHopId = endpointLogicalIds[endpointId] ?: packet.previousHopId
+        val plaintext = try {
+            HopEncryption.decrypt(packet.ciphertext, HopEncryption.linkKey(previousHopId, selfId))
         } catch (error: Throwable) {
-            return@withLock Result.failure(error)
-        }
-        if (bytes.size > MAX_MESSAGE_BYTES) {
-            return@withLock Result.failure(IllegalArgumentException("Message is too large"))
+            Log.w(TAG, "Unable to decrypt hop packet from $endpointId", error)
+            _transportStatus.value = "Encrypted packet rejected"
+            return
         }
 
-        try {
-            // No coroutine bridge and no UI work in the Google Task callback. Nearby accepts
-            // this byte payload and invokes PayloadCallback on the receiving endpoint.
+        seenPackets.add(packet.messageId)
+        val nextHopCount = packet.hopCount + 1
+
+        if (packet.destinationNodeId == selfId) {
+            emitDecryptedMessage(endpointId, packet, plaintext, nextHopCount)
+            return
+        }
+
+        val nextEndpoint = findNextEndpoint(packet)
+        if (nextEndpoint == null) {
+            _transportStatus.value = "Relay received packet • no next hop"
+            return
+        }
+
+        val nextHopId = endpointLogicalIds[nextEndpoint]
+        if (nextHopId.isNullOrBlank()) return
+
+        val forwarded = packet.copy(
+            previousHopId = selfId,
+            hopCount = nextHopCount,
+            path = packet.path + selfId,
+            ciphertext = HopEncryption.encrypt(plaintext, HopEncryption.linkKey(selfId, nextHopId)),
+        )
+
+        _transportStatus.value = "Relay hop $nextHopCount • decrypted → re-encrypted → ${nextHopId.takeLast(4)}"
+        scope.launch { sendToEndpoint(nextEndpoint, forwarded) }
+    }
+
+    private fun findNextEndpoint(packet: HopPacket): String? {
+        val direct = logicalIdEndpoints[packet.destinationNodeId]
+        if (direct != null && connectedEndpoints.contains(direct) && endpointLogicalIds[direct] !in packet.path) {
+            return direct
+        }
+
+        val candidate = connectedEndpoints.firstOrNull { endpoint ->
+            val logical = endpointLogicalIds[endpoint]
+            logical != null && logical !in packet.path && logical != packet.destinationNodeId
+        }
+        if (candidate != null) return candidate
+
+        // If the destination is discovered but not connected yet, initiate the next link.
+        val discovered = _discoveredNodes.value.firstOrNull { it.logicalId == packet.destinationNodeId }
+        if (discovered != null && discovered.id !in packet.path) {
+            scope.launch {
+                val result = connectToDevice(discovered)
+                if (result.isSuccess) handlePayloadAfterConnection(discovered.id, packet)
+            }
+        }
+        return null
+    }
+
+    private fun handlePayloadAfterConnection(endpointId: String, packet: HopPacket) {
+        if (packet.destinationNodeId == selfId) return
+        if (endpointId !in connectedEndpoints) return
+        val nextHopId = endpointLogicalIds[endpointId] ?: return
+        val plaintext = runCatching {
+            HopEncryption.decrypt(packet.ciphertext, HopEncryption.linkKey(packet.previousHopId, selfId))
+        }.getOrNull() ?: return
+        val forwarded = packet.copy(
+            previousHopId = selfId,
+            hopCount = packet.hopCount + 1,
+            path = packet.path + selfId,
+            ciphertext = HopEncryption.encrypt(plaintext, HopEncryption.linkKey(selfId, nextHopId)),
+        )
+        scope.launch { sendToEndpoint(endpointId, forwarded) }
+    }
+
+    private suspend fun sendToEndpoint(endpointId: String, packet: HopPacket): Result<Unit> {
+        if (!connectedEndpoints.contains(endpointId)) {
+            return Result.failure(IllegalStateException("Next hop is no longer connected"))
+        }
+        val bytes = packet.toJson()
+        if (bytes.size > MAX_MESSAGE_BYTES) {
+            return Result.failure(IllegalArgumentException("Encrypted packet is too large"))
+        }
+        return try {
             client.sendPayload(endpointId, Payload.fromBytes(bytes))
-            Log.d(TAG, "Payload queued for endpoint=$endpointId")
-            _transportStatus.value = "Message sent"
+            Log.d(TAG, "Encrypted hop packet ${packet.messageId} sent ${packet.previousHopId} -> ${endpointLogicalIds[endpointId]} hop=${packet.hopCount}")
             Result.success(Unit)
         } catch (error: Throwable) {
-            Log.e(TAG, "sendPayload threw for endpoint=$endpointId", error)
+            Log.e(TAG, "sendPayload failed for endpoint=$endpointId", error)
             _transportStatus.value = "Message failed: ${errorMessage(error)}"
             Result.failure(error)
         }
     }
 
+    private fun emitDecryptedMessage(endpointId: String, packet: HopPacket, plaintext: ByteArray, hopCount: Int) {
+        try {
+            val json = JSONObject(plaintext.toString(Charsets.UTF_8))
+            if (json.optString("kind") != "MESSAGE") return
+            val content = json.optString("content")
+            if (content.isBlank()) return
+            val messageId = json.optString("id").ifBlank { packet.messageId }
+            val type = runCatching {
+                MessageType.valueOf(json.optString("type", MessageType.TEXT.name))
+            }.getOrDefault(MessageType.TEXT)
+
+            _incoming.tryEmit(
+                Message(
+                    id = messageId,
+                    conversationId = packet.sourceNodeId,
+                    senderId = packet.sourceNodeId,
+                    receiverId = selfId,
+                    content = content,
+                    timestamp = json.optLong("timestamp", System.currentTimeMillis()),
+                    status = MessageStatus.RECEIVED,
+                    type = type,
+                    recipientNodeId = selfId,
+                    hopCount = hopCount,
+                    hopEncrypted = true,
+                )
+            )
+            _transportStatus.value = if (hopCount > 1) {
+                "Message decrypted • arrived via $hopCount hops"
+            } else {
+                "Message decrypted • direct hop"
+            }
+            Log.d(TAG, "Delivered ${packet.messageId} after $hopCount hop(s) via endpoint=$endpointId")
+        } catch (error: Throwable) {
+            Log.w(TAG, "Invalid decrypted message payload", error)
+        }
+    }
+
+    private fun decodeLegacyMessage(endpointId: String, bytes: ByteArray) {
+        try {
+            val json = JSONObject(bytes.toString(Charsets.UTF_8))
+            if (json.optString("kind") != "MESSAGE") return
+            val content = json.optString("content")
+            if (content.isBlank()) return
+            val messageId = json.optString("id").ifBlank { "rx-$endpointId-${System.nanoTime()}" }
+            val type = runCatching {
+                MessageType.valueOf(json.optString("type", MessageType.TEXT.name))
+            }.getOrDefault(MessageType.TEXT)
+            _incoming.tryEmit(
+                Message(
+                    id = messageId,
+                    conversationId = endpointId,
+                    senderId = endpointLogicalIds[endpointId] ?: endpointId,
+                    receiverId = selfId,
+                    content = content,
+                    timestamp = json.optLong("timestamp", System.currentTimeMillis()),
+                    status = MessageStatus.RECEIVED,
+                    type = type,
+                )
+            )
+        } catch (error: Throwable) {
+            Log.w(TAG, "Invalid legacy message payload from $endpointId", error)
+        }
+    }
+
+    private fun messageToJson(message: Message, destinationId: String): String = JSONObject().apply {
+        put("kind", "MESSAGE")
+        put("id", message.id)
+        put("senderId", selfId)
+        put("receiverId", destinationId)
+        put("content", message.content)
+        put("timestamp", message.timestamp)
+        put("type", message.type.name)
+    }.toString()
+
     private fun startAdvertisingSafely() {
         if (advertisingRunning) return
         try {
             client.startAdvertising(
-                selfName,
+                selfId + "|" + selfName,
                 SERVICE_ID,
                 connectionCallback,
                 AdvertisingOptions.Builder().setStrategy(STRATEGY).build(),
@@ -334,55 +548,18 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
 
     private fun errorMessage(error: Throwable): String {
         val code = (error as? ApiException)?.statusCode
-        return if (code != null) {
-            "${ConnectionsStatusCodes.getStatusCodeString(code)} ($code)"
-        } else {
-            error.message ?: error.javaClass.simpleName
-        }
+        return if (code != null) "${ConnectionsStatusCodes.getStatusCodeString(code)} ($code)" else error.message ?: error.javaClass.simpleName
     }
 
-    private fun decodeAndEmit(endpointId: String, bytes: ByteArray) {
-        try {
-            val json = JSONObject(bytes.toString(Charsets.UTF_8))
-            if (json.optString("kind") != "MESSAGE") return
-            val content = json.optString("content")
-            if (content.isBlank()) return
-
-            val messageId = json.optString("id")
-                .ifBlank { "rx-$endpointId-${System.nanoTime()}" }
-            val type = runCatching {
-                MessageType.valueOf(json.optString("type", MessageType.TEXT.name))
-            }.getOrDefault(MessageType.TEXT)
-
-            _incoming.tryEmit(
-                Message(
-                    id = messageId,
-                    conversationId = endpointId,
-                    senderId = endpointId,
-                    receiverId = selfId,
-                    content = content,
-                    timestamp = json.optLong("timestamp", System.currentTimeMillis()),
-                    status = MessageStatus.RECEIVED,
-                    type = type,
-                )
-            )
-            _transportStatus.value = "Message received from ${endpointNames[endpointId] ?: "OFFGRID device"}"
-        } catch (error: Throwable) {
-            Log.w(TAG, "Invalid message payload from $endpointId", error)
-        }
+    private fun displayNameFromAdvertisedName(name: String): String {
+        val first = name.substringBefore("|id=").substringAfterLast("|")
+        return first.ifBlank { "OFFGRID device" }
     }
 
-    private fun messageToJson(message: Message): String = JSONObject().apply {
-        put("kind", "MESSAGE")
-        put("id", message.id)
-        put("senderId", selfId)
-        put("receiverId", message.receiverId)
-        put("content", message.content)
-        put("timestamp", message.timestamp)
-        put("type", message.type.name)
-    }.toString()
+    private fun logicalIdFromAdvertisedName(name: String): String? =
+        name.substringAfter("|id=", missingDelimiterValue = "").substringBefore("|").ifBlank { null }
 
-    private fun upsertNode(endpointId: String, name: String, status: NodeStatus) {
+    private fun upsertNode(endpointId: String, name: String, status: NodeStatus, logicalId: String) {
         val safeName = name.ifBlank { "OFFGRID device" }
         val node = Node(
             id = endpointId,
@@ -391,13 +568,15 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             lastSeen = System.currentTimeMillis(),
             isSimulated = false,
             hops = 1,
-            capabilities = setOf(DeviceCapability.MESSAGING),
+            capabilities = setOf(DeviceCapability.MESSAGING, DeviceCapability.RELAY),
+            logicalId = logicalId,
         )
-        _discoveredNodes.value = (_discoveredNodes.value.filterNot { it.id == endpointId } + node)
-            .distinctBy { it.id }
+        _discoveredNodes.value = (_discoveredNodes.value.filterNot { it.id == endpointId } + node).distinctBy { it.id }
     }
 
     private fun removeEndpoint(endpointId: String) {
+        val logicalId = endpointLogicalIds.remove(endpointId)
+        if (logicalId != null) logicalIdEndpoints.remove(logicalId, endpointId)
         endpointNames.remove(endpointId)
         _discoveredNodes.value = _discoveredNodes.value.filterNot { it.id == endpointId }
     }
@@ -420,12 +599,13 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         discoveryRunning = false
         connectedEndpoints.clear()
         pendingConnections.values.forEach { deferred ->
-            runCatching {
-                deferred.complete(Result.failure(IllegalStateException("Transport stopped")))
-            }
+            runCatching { deferred.complete(Result.failure(IllegalStateException("Transport stopped"))) }
         }
         pendingConnections.clear()
         endpointNames.clear()
+        endpointLogicalIds.clear()
+        logicalIdEndpoints.clear()
+        seenPackets.clear()
         _discoveredNodes.value = emptyList()
         _linkState.value = LinkState.OFFLINE
         _transportStatus.value = "Offline"
@@ -436,6 +616,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         private const val SERVICE_ID = "com.offgrid.app.offline"
         private const val CONNECTION_TIMEOUT_MS = 10_000L
         private const val MAX_MESSAGE_BYTES = 8_192
+        private const val MAX_HOPS = 8
         private val STRATEGY = Strategy.P2P_CLUSTER
     }
 }
