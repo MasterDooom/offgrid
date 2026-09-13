@@ -30,6 +30,8 @@ class MessagingRepository(
             try {
                 transport.incomingMessages.collect { message ->
                     try {
+                        // Conversation identity is always the stable OFFGRID logical ID.
+                        // Nearby endpoint IDs are different on each physical connection.
                         append(message.conversationId, message)
                     } catch (_: Throwable) {
                         // Never let a malformed packet crash the UI collector.
@@ -44,7 +46,10 @@ class MessagingRepository(
     }
 
     fun conversationWith(node: Node): Conversation =
-        _conversations.value[node.id] ?: Conversation(id = node.id, peer = node)
+        _conversations.value[node.logicalId] ?: Conversation(
+            id = node.logicalId,
+            peer = node,
+        )
 
     suspend fun send(node: Node, text: String) {
         val cleanText = text.trim()
@@ -52,7 +57,7 @@ class MessagingRepository(
 
         sendMutex.withLock {
             val outgoing = Message(
-                conversationId = node.id,
+                conversationId = node.logicalId,
                 senderId = selfId,
                 receiverId = node.id,
                 content = cleanText,
@@ -60,7 +65,7 @@ class MessagingRepository(
             )
 
             try {
-                append(node.id, outgoing)
+                append(node.logicalId, outgoing)
             } catch (_: Throwable) {
                 return@withLock
             }
@@ -73,7 +78,7 @@ class MessagingRepository(
 
             try {
                 replaceStatus(
-                    node.id,
+                    node.logicalId,
                     outgoing.id,
                     if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
                 )
@@ -85,7 +90,7 @@ class MessagingRepository(
 
     suspend fun sendEmergency(node: Node, text: String): Result<Unit> = sendMutex.withLock {
         val outgoing = Message(
-            conversationId = node.id,
+            conversationId = node.logicalId,
             senderId = selfId,
             receiverId = node.id,
             content = text,
@@ -93,7 +98,7 @@ class MessagingRepository(
             recipientNodeId = node.logicalId,
         )
         try {
-            append(node.id, outgoing)
+            append(node.logicalId, outgoing)
         } catch (error: Throwable) {
             return@withLock Result.failure(error)
         }
@@ -106,7 +111,7 @@ class MessagingRepository(
 
         try {
             replaceStatus(
-                node.id,
+                node.logicalId,
                 outgoing.id,
                 if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
             )
@@ -121,7 +126,11 @@ class MessagingRepository(
         val existing = current[conversationId]
             ?: Conversation(
                 id = conversationId,
-                peer = Node(id = conversationId, name = conversationId),
+                peer = Node(
+                    id = message.senderId,
+                    name = message.senderId,
+                    logicalId = conversationId,
+                ),
             )
 
         // Nearby may retry a payload. Never insert the same message twice.
