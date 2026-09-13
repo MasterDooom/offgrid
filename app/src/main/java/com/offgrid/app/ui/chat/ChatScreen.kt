@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -35,6 +36,7 @@ import com.offgrid.app.data.model.Node
 import java.text.DateFormat
 import java.util.Date
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     node: Node,
@@ -56,7 +58,7 @@ fun ChatScreen(
                     Column {
                         Text(node.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            if (canSend) "● Offline link" else "○ Connecting to nearby node…",
+                            if (canSend) "● Offline link" else "○ Waiting for mesh route…",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
                         )
@@ -77,12 +79,12 @@ fun ChatScreen(
                             transportStatus.contains("Relay") -> "MESH RELAY · $transportStatus"
                             transportStatus.contains("encrypted", ignoreCase = true) -> "ENCRYPTED HOP · $transportStatus"
                             canSend -> "OFFLINE LINK · Messages travel device-to-device"
-                            else -> "WAITING FOR LINK · Keep both devices nearby"
+                            else -> "WAITING FOR MESH ROUTE · Keep a relay nearby"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
-                    if (transportStatus.contains("Relay") || transportStatus.contains("hops")) {
+                    if (transportStatus.contains("Relay") || transportStatus.contains("hops", ignoreCase = true)) {
                         Text(
                             "Each relay decrypts its incoming hop and re-encrypts for the next hop.",
                             style = MaterialTheme.typography.labelSmall,
