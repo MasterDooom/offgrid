@@ -56,6 +56,7 @@ class MessagingRepository(
                 senderId = selfId,
                 receiverId = node.id,
                 content = cleanText,
+                recipientNodeId = node.logicalId,
             )
 
             try {
@@ -89,6 +90,7 @@ class MessagingRepository(
             receiverId = node.id,
             content = text,
             type = MessageType.EMERGENCY,
+            recipientNodeId = node.logicalId,
         )
         try {
             append(node.id, outgoing)
