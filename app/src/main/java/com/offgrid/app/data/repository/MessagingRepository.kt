@@ -30,9 +30,10 @@ class MessagingRepository(
             try {
                 transport.incomingMessages.collect { message ->
                     try {
-                        // Conversation identity is always the stable OFFGRID logical ID.
-                        // Nearby endpoint IDs are different on each physical connection.
-                        append(message.conversationId, message)
+                        // Always derive the conversation from stable logical identities.
+                        // A Nearby endpoint ID is temporary and must never create a second chat.
+                        val conversationId = canonicalConversationId(message)
+                        append(conversationId, message.copy(conversationId = conversationId))
                     } catch (_: Throwable) {
                         // Never let a malformed packet crash the UI collector.
                     }
@@ -56,8 +57,9 @@ class MessagingRepository(
         if (cleanText.isEmpty()) return
 
         sendMutex.withLock {
+            val conversationId = node.logicalId
             val outgoing = Message(
-                conversationId = node.logicalId,
+                conversationId = conversationId,
                 senderId = selfId,
                 receiverId = node.id,
                 content = cleanText,
@@ -65,7 +67,7 @@ class MessagingRepository(
             )
 
             try {
-                append(node.logicalId, outgoing)
+                append(conversationId, outgoing)
             } catch (_: Throwable) {
                 return@withLock
             }
@@ -78,7 +80,7 @@ class MessagingRepository(
 
             try {
                 replaceStatus(
-                    node.logicalId,
+                    conversationId,
                     outgoing.id,
                     if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
                 )
@@ -89,8 +91,9 @@ class MessagingRepository(
     }
 
     suspend fun sendEmergency(node: Node, text: String): Result<Unit> = sendMutex.withLock {
+        val conversationId = node.logicalId
         val outgoing = Message(
-            conversationId = node.logicalId,
+            conversationId = conversationId,
             senderId = selfId,
             receiverId = node.id,
             content = text,
@@ -98,7 +101,7 @@ class MessagingRepository(
             recipientNodeId = node.logicalId,
         )
         try {
-            append(node.logicalId, outgoing)
+            append(conversationId, outgoing)
         } catch (error: Throwable) {
             return@withLock Result.failure(error)
         }
@@ -111,7 +114,7 @@ class MessagingRepository(
 
         try {
             replaceStatus(
-                node.logicalId,
+                conversationId,
                 outgoing.id,
                 if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
             )
@@ -121,7 +124,20 @@ class MessagingRepository(
         result
     }
 
+    /**
+     * The logical peer is the conversation key. For an outgoing message the peer is the
+     * recipient; for an incoming message the peer is the original sender. This remains true
+     * even when the packet travelled through one or more relay nodes.
+     */
+    private fun canonicalConversationId(message: Message): String =
+        if (message.senderId == selfId) {
+            message.recipientNodeId ?: message.receiverId
+        } else {
+            message.senderId
+        }
+
     private fun append(conversationId: String, message: Message) {
+        if (conversationId.isBlank()) return
         val current = _conversations.value
         val existing = current[conversationId]
             ?: Conversation(
