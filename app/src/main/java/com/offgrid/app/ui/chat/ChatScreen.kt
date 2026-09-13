@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -17,7 +18,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +43,7 @@ fun ChatScreen(
     canSend: Boolean,
     onBack: () -> Unit,
     onSend: (String) -> Unit,
+    transportStatus: String = "",
 ) {
     var draft by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
@@ -55,7 +56,7 @@ fun ChatScreen(
                     Column {
                         Text(node.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            if (canSend) "● Direct link" else "○ Connecting to nearby node…",
+                            if (canSend) "● Offline link" else "○ Connecting to nearby node…",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
                         )
@@ -70,12 +71,26 @@ fun ChatScreen(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .65f),
             ) {
-                Text(
-                    if (canSend) "OFFLINE LINK · Messages travel device-to-device" else "WAITING FOR LINK · Keep both devices nearby",
-                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Text(
+                        when {
+                            transportStatus.contains("Relay") -> "MESH RELAY · $transportStatus"
+                            transportStatus.contains("encrypted", ignoreCase = true) -> "ENCRYPTED HOP · $transportStatus"
+                            canSend -> "OFFLINE LINK · Messages travel device-to-device"
+                            else -> "WAITING FOR LINK · Keep both devices nearby"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    if (transportStatus.contains("Relay") || transportStatus.contains("hops")) {
+                        Text(
+                            "Each relay decrypts its incoming hop and re-encrypts for the next hop.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                }
             }
 
             Column(
@@ -136,6 +151,14 @@ private fun MessageBubble(message: Message, selfId: String) {
                     val time = runCatching { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(message.timestamp)) }.getOrDefault("")
                     Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (fromMe) Text("  ${statusLabel(message.status)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+                if (message.hopEncrypted && message.hopCount > 1) {
+                    Text(
+                        "Encrypted relay • ${message.hopCount} hops",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
                 }
             }
         }
