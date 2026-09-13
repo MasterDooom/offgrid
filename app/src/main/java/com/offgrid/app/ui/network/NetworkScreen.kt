@@ -71,6 +71,7 @@ fun NetworkScreen(
             nodes = nodes,
             selfId = selfId,
             selfName = selfName,
+            onSelectNode = onSelectNode,
             modifier = Modifier
                 .fillMaxWidth()
                 .size(330.dp)
@@ -113,7 +114,13 @@ fun NetworkScreen(
 }
 
 @Composable
-private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modifier: Modifier = Modifier) {
+private fun NetworkMap(
+    nodes: List<Node>,
+    selfId: String,
+    selfName: String,
+    onSelectNode: (Node) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val pulse by rememberInfiniteTransition(label = "network-pulse").animateFloat(
         initialValue = .55f,
         targetValue = 1f,
@@ -126,6 +133,8 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
             node.id to Offset((0.5f + 0.34f * cos(angle)).toFloat(), (0.5f + 0.34f * sin(angle)).toFloat())
         }.toMap()
     }
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.secondary
 
     Box(modifier) {
         Canvas(Modifier.fillMaxSize()) {
@@ -133,7 +142,7 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
             val radius = minOf(size.width, size.height) * .34f
             for (i in 1..3) {
                 drawCircle(
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = .045f),
+                    color = primaryColor.copy(alpha = .045f),
                     radius = radius * i / 3f,
                     center = center,
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
@@ -142,7 +151,7 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
             positions.values.forEach { p ->
                 val target = Offset(p.x * size.width, p.y * size.height)
                 drawLine(
-                    color = MaterialTheme.colorScheme.secondary.copy(alpha = .22f),
+                    color = secondaryColor.copy(alpha = .22f),
                     start = center,
                     end = target,
                     strokeWidth = 1.5.dp.toPx(),
@@ -154,11 +163,11 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
         Surface(
             modifier = Modifier.align(Alignment.Center).size(82.dp),
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
+            color = primaryColor.copy(alpha = .14f),
             tonalElevation = 3.dp,
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text("◉", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
+                Text("◉", color = primaryColor, style = MaterialTheme.typography.titleLarge)
                 Text("YOU", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             }
         }
@@ -173,12 +182,12 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
                     .padding(start = (x * 300).dp, top = (y * 300).dp)
                     .size(58.dp),
                 shape = CircleShape,
-                color = if (node.status == NodeStatus.CONNECTED) MaterialTheme.colorScheme.secondary.copy(alpha = .18f) else MaterialTheme.colorScheme.surface,
+                color = if (node.status == NodeStatus.CONNECTED) secondaryColor.copy(alpha = .18f) else MaterialTheme.colorScheme.surface,
                 tonalElevation = 3.dp,
                 onClick = { onSelectNode(node) },
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Text("•", color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.titleLarge)
+                    Text("•", color = secondaryColor, style = MaterialTheme.typography.titleLarge)
                     Text(node.name.take(8), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
                 }
             }
