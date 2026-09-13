@@ -70,6 +70,8 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     private val endpointLogicalIds = ConcurrentHashMap<String, String>()
     private val logicalIdEndpoints = ConcurrentHashMap<String, String>()
     private val seenPackets = ConcurrentHashMap.newKeySet<String>()
+    // A packet is only permanently deduplicated after successful forwarding.
+    private val forwardingPackets = ConcurrentHashMap.newKeySet<String>()
     private val sendMutex = Mutex()
 
     private val _discoveredNodes = MutableStateFlow<List<Node>>(emptyList())
@@ -118,7 +120,9 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                     refreshLinkState()
                     _transportStatus.value = "Connected to $name • encrypted hop ready"
                     Log.d(TAG, "Connected endpoint=$endpointId logicalId=$logicalId name=$name")
-                    scope.launch { announceRoutesTo(endpointId) }
+                    // Re-advertise the complete route table to every connected neighbour.
+                    // This lets an existing A-B link learn about C when B connects to C later.
+                    scope.launch { announceRoutesTo(null) }
                 } else {
                     connectedEndpoints.remove(endpointId)
                     val name = endpointNames[endpointId] ?: "OFFGRID device"
@@ -156,7 +160,12 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 val logicalId = logicalIdFromAdvertisedName(info.endpointName) ?: endpointId
                 endpointNames[endpointId] = name
                 endpointLogicalIds[endpointId] = logicalId
-                logicalIdEndpoints[logicalId] = endpointId
+                // Discovery can report a new endpoint for the same logical device.
+                // Never replace a live mapping with an unconnected endpoint.
+                val existingEndpoint = logicalIdEndpoints[logicalId]
+                if (existingEndpoint == null || !connectedEndpoints.contains(existingEndpoint)) {
+                    logicalIdEndpoints[logicalId] = endpointId
+                }
                 val status = if (connectedEndpoints.contains(endpointId)) NodeStatus.CONNECTED else NodeStatus.AVAILABLE
                 upsertNode(endpointId, name, status, logicalId)
                 _transportStatus.value = "Found $name"
@@ -301,7 +310,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             return
         }
 
-        if (packet.messageId in seenPackets) {
+        if (packet.messageId in seenPackets || !forwardingPackets.add(packet.messageId)) {
             _transportStatus.value = "Duplicate packet ignored"
             return
         }
@@ -329,6 +338,8 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         val nextHopCount = packet.hopCount + 1
 
         if (packet.destinationNodeId == selfId) {
+            seenPackets.add(packet.messageId)
+            forwardingPackets.remove(packet.messageId)
             emitDecryptedMessage(endpointId, packet, plaintext, nextHopCount)
             return
         }
@@ -343,8 +354,13 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
                 scope.launch {
                     if (connectToDevice(discovered).isSuccess) {
                         forwardAfterConnection(discovered.id, packet, plaintext)
+                    } else {
+                        forwardingPackets.remove(packet.messageId)
+                        _transportStatus.value = "RELAYING • unable to connect to ${packet.destinationNodeId}"
                     }
                 }
+            } else {
+                forwardingPackets.remove(packet.messageId)
             }
             return
         }
@@ -357,6 +373,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
         val nextEndpoint = logicalIdEndpoints[nextHopId]
         if (nextEndpoint == null || !connectedEndpoints.contains(nextEndpoint)) {
             _transportStatus.value = "RELAYING • next hop unavailable"
+            forwardingPackets.remove(packet.messageId)
             return
         }
 
@@ -423,7 +440,17 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
             ciphertext = HopEncryption.encrypt(plaintext, HopEncryption.linkKey(selfId, nextHopId)),
         )
         _transportStatus.value = "RELAYING • hop $nextHopCount • DECRYPTED → RE-ENCRYPTED → ${nextHopId.takeLast(4)}"
-        scope.launch { sendToEndpoint(nextEndpoint, forwarded) }
+        scope.launch {
+            val result = sendToEndpoint(nextEndpoint, forwarded)
+            if (result.isSuccess) {
+                seenPackets.add(packet.messageId)
+                forwardingPackets.remove(packet.messageId)
+                _transportStatus.value = "FORWARDED • hop $nextHopCount • ${selfId.takeLast(4)} → ${nextHopId.takeLast(4)}"
+            } else {
+                // Allow the same message to be retried after a transient transport failure.
+                forwardingPackets.remove(packet.messageId)
+            }
+        }
     }
 
     private suspend fun sendToEndpoint(endpointId: String, packet: HopPacket): Result<Unit> {
