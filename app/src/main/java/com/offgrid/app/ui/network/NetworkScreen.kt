@@ -31,10 +31,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.offgrid.app.data.model.DeviceCapability
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.model.NodeStatus
 import kotlin.math.cos
@@ -72,6 +72,11 @@ fun NetworkScreen(
             selfName = selfName,
             onSelectNode = onSelectNode,
             modifier = Modifier.fillMaxWidth().size(330.dp).padding(horizontal = 16.dp),
+        )
+
+        EncryptionDemoCard(
+            transportStatus = transportStatus,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
         )
 
         Surface(
@@ -121,9 +126,9 @@ fun NetworkScreen(
                             Text(node.logicalId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text(
-                            if (node.capabilities.contains(com.offgrid.app.data.model.DeviceCapability.RELAY)) "RELAY" else node.status.name.lowercase().replaceFirstChar { it.uppercase() },
+                            if (node.capabilities.contains(DeviceCapability.RELAY)) "RELAY" else node.status.name.lowercase().replaceFirstChar { it.uppercase() },
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (node.capabilities.contains(com.offgrid.app.data.model.DeviceCapability.RELAY)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (node.capabilities.contains(DeviceCapability.RELAY)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -143,7 +148,6 @@ private fun NetworkMap(
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
     val surface = MaterialTheme.colorScheme.surface
-    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
     val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
     val pulse by rememberInfiniteTransition(label = "network-pulse").animateFloat(
         initialValue = .55f,
