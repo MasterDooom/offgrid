@@ -8,9 +8,11 @@ package com.offgrid.app.data.transport
  * a Nearby endpoint and moving bytes over the physical connection.
  */
 class HopRouter(
-    private val selfId: String,
+    initialSelfId: String = "",
     private val maxHops: Int = 8,
 ) {
+    @Volatile private var selfId: String = initialSelfId
+
     data class Route(
         val destinationNodeId: String,
         val nextHopNodeId: String,
@@ -19,6 +21,13 @@ class HopRouter(
     )
 
     private val routes = linkedMapOf<String, Route>()
+
+    @Synchronized
+    fun setIdentity(nodeId: String) {
+        if (nodeId.isBlank() || nodeId == selfId) return
+        selfId = nodeId
+        routes.clear()
+    }
 
     /** Learn a route advertised by a neighbour. Returns true when the table changed. */
     @Synchronized
