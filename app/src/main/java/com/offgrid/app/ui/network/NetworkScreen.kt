@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -30,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -45,16 +47,13 @@ fun NetworkScreen(
     selfName: String,
     onBack: () -> Unit,
     onSelectNode: (Node) -> Unit,
+    transportStatus: String = "",
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) { Text("‹", style = MaterialTheme.typography.headlineMedium) }
@@ -71,21 +70,41 @@ fun NetworkScreen(
             nodes = nodes,
             selfId = selfId,
             selfName = selfName,
-            modifier = Modifier
-                .fillMaxWidth()
-                .size(330.dp)
-                .padding(horizontal = 16.dp),
+            onSelectNode = onSelectNode,
+            modifier = Modifier.fillMaxWidth().size(330.dp).padding(horizontal = 16.dp),
         )
+
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f),
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("MESH STATUS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text(
+                    transportStatus.ifBlank { "Listening for nearby OffGrid nodes…" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                if (transportStatus.contains("Relay", ignoreCase = true) || transportStatus.contains("hops", ignoreCase = true)) {
+                    Text(
+                        "Relay path: each hop is decrypted locally, then re-encrypted for the next link.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
 
         Text(
             "Nearby devices",
-            modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 8.dp),
+            modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 8.dp),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
         )
         LazyColumn(
             modifier = Modifier.fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(nodes, key = { it.id }) { node ->
@@ -95,16 +114,17 @@ fun NetworkScreen(
                     color = MaterialTheme.colorScheme.surface,
                     tonalElevation = 1.dp,
                 ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         StatusDot(node.status)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text(node.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                            Text(node.id, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(node.logicalId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text(node.status.name.lowercase().replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            if (node.capabilities.contains(com.offgrid.app.data.model.DeviceCapability.RELAY)) "RELAY" else node.status.name.lowercase().replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (node.capabilities.contains(com.offgrid.app.data.model.DeviceCapability.RELAY)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -113,7 +133,18 @@ fun NetworkScreen(
 }
 
 @Composable
-private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modifier: Modifier = Modifier) {
+private fun NetworkMap(
+    nodes: List<Node>,
+    selfId: String,
+    selfName: String,
+    onSelectNode: (Node) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = MaterialTheme.colorScheme.secondary
+    val surface = MaterialTheme.colorScheme.surface
+    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
     val pulse by rememberInfiniteTransition(label = "network-pulse").animateFloat(
         initialValue = .55f,
         targetValue = 1f,
@@ -133,18 +164,17 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
             val radius = minOf(size.width, size.height) * .34f
             for (i in 1..3) {
                 drawCircle(
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = .045f),
+                    color = primary.copy(alpha = .045f),
                     radius = radius * i / 3f,
                     center = center,
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
                 )
             }
             positions.values.forEach { p ->
-                val target = Offset(p.x * size.width, p.y * size.height)
                 drawLine(
-                    color = MaterialTheme.colorScheme.secondary.copy(alpha = .22f),
+                    color = secondary.copy(alpha = .22f),
                     start = center,
-                    end = target,
+                    end = Offset(p.x * size.width, p.y * size.height),
                     strokeWidth = 1.5.dp.toPx(),
                     cap = StrokeCap.Round,
                 )
@@ -154,11 +184,11 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
         Surface(
             modifier = Modifier.align(Alignment.Center).size(82.dp),
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
+            color = primary.copy(alpha = .14f),
             tonalElevation = 3.dp,
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text("◉", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
+                Text("◉", color = primary, style = MaterialTheme.typography.titleLarge)
                 Text("YOU", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             }
         }
@@ -168,17 +198,14 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
             val x = (0.5f + 0.34f * cos(angle)).toFloat()
             val y = (0.5f + 0.34f * sin(angle)).toFloat()
             Surface(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = (x * 300).dp, top = (y * 300).dp)
-                    .size(58.dp),
+                modifier = Modifier.align(Alignment.TopStart).padding(start = (x * 300 - 29).dp, top = (y * 300 - 29).dp).size(58.dp),
                 shape = CircleShape,
-                color = if (node.status == NodeStatus.CONNECTED) MaterialTheme.colorScheme.secondary.copy(alpha = .18f) else MaterialTheme.colorScheme.surface,
+                color = if (node.status == NodeStatus.CONNECTED) secondary.copy(alpha = .18f) else surface,
                 tonalElevation = 3.dp,
                 onClick = { onSelectNode(node) },
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Text("•", color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.titleLarge)
+                    Text("•", color = secondary, style = MaterialTheme.typography.titleLarge)
                     Text(node.name.take(8), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
                 }
             }
@@ -188,7 +215,7 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, modi
             "${nodes.count { it.status == NodeStatus.CONNECTED }} linked · pulse ${((pulse * 100).toInt())}%",
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = onSurfaceVariant,
         )
     }
 }
