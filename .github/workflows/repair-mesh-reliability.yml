@@ -1,0 +1,167 @@
+name: Repair mesh reliability
+
+on:
+  push:
+    branches: [feature/hop-encryption-relay]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[mesh-repair]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/hop-encryption-relay
+          fetch-depth: 1
+
+      - name: Apply reliability fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/offgrid/app/data/transport/MockCommunicationTransport.kt')
+          s = p.read_text()
+
+          old = '''                    scope.launch { announceRoutesTo(endpointId) }'''
+          new = '''                    // A newly connected peer may have routes learned through other peers.
+                    // Re-advertise the complete table to every connected neighbour so a
+                    // topology such as A-B-C converges even when B connects to C after A.
+                    scope.launch { announceRoutesTo(null) }'''
+          if old not in s:
+              raise SystemExit('route advertisement target not found')
+          s = s.replace(old, new, 1)
+
+          old = '''                logicalIdEndpoints[logicalId] = endpointId
+                val status = if (connectedEndpoints.contains(endpointId)) NodeStatus.CONNECTED else NodeStatus.AVAILABLE'''
+          new = '''                // Do not replace a live endpoint mapping with a newly discovered but
+                // unconnected endpoint for the same stable OffGrid identity.
+                val existingEndpoint = logicalIdEndpoints[logicalId]
+                if (existingEndpoint == null || !connectedEndpoints.contains(existingEndpoint)) {
+                    logicalIdEndpoints[logicalId] = endpointId
+                }
+                val status = if (connectedEndpoints.contains(endpointId)) NodeStatus.CONNECTED else NodeStatus.AVAILABLE'''
+          if old not in s:
+              raise SystemExit('endpoint mapping block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''    private val seenPackets = ConcurrentHashMap.newKeySet<String>()
+    private val sendMutex = Mutex()'''
+          new = '''    private val seenPackets = ConcurrentHashMap.newKeySet<String>()
+    // Prevent duplicate concurrent forwards while still allowing a retry when a send fails.
+    private val forwardingPackets = ConcurrentHashMap.newKeySet<String>()
+    private val sendMutex = Mutex()'''
+          if old not in s:
+              raise SystemExit('packet state block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        if (packet.messageId in seenPackets) {
+            _transportStatus.value = "Duplicate packet ignored"
+            return
+        }'''
+          new = '''        if (packet.messageId in seenPackets || !forwardingPackets.add(packet.messageId)) {
+            _transportStatus.value = "Duplicate packet ignored"
+            return
+        }'''
+          if old not in s:
+              raise SystemExit('dedupe block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        if (packet.destinationNodeId == selfId) {
+            emitDecryptedMessage(endpointId, packet, plaintext, nextHopCount)
+            return
+        }'''
+          new = '''        if (packet.destinationNodeId == selfId) {
+            seenPackets.add(packet.messageId)
+            forwardingPackets.remove(packet.messageId)
+            emitDecryptedMessage(endpointId, packet, plaintext, nextHopCount)
+            return
+        }'''
+          if old not in s:
+              raise SystemExit('destination block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''            _transportStatus.value = "RELAYING • no route to ${packet.destinationNodeId}"
+            val discovered = _discoveredNodes.value.firstOrNull { it.logicalId == packet.destinationNodeId && it.id !in packet.path }
+            if (discovered != null) {
+                scope.launch {
+                    if (connectToDevice(discovered).isSuccess) {
+                        forwardAfterConnection(discovered.id, packet, plaintext)
+                    }
+                }
+            }
+            return'''
+          new = '''            _transportStatus.value = "RELAYING • no route to ${packet.destinationNodeId}"
+            val discovered = _discoveredNodes.value.firstOrNull {
+                it.logicalId == packet.destinationNodeId && it.id !in packet.path
+            }
+            if (discovered != null) {
+                scope.launch {
+                    val result = connectToDevice(discovered)
+                    if (result.isSuccess) {
+                        forwardAfterConnection(discovered.id, packet, plaintext)
+                    } else {
+                        forwardingPackets.remove(packet.messageId)
+                        _transportStatus.value = "RELAYING • unable to connect to ${packet.destinationNodeId}"
+                    }
+                }
+            } else {
+                forwardingPackets.remove(packet.messageId)
+            }
+            return'''
+          if old not in s:
+              raise SystemExit('no-route block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        if (nextEndpoint == null || !connectedEndpoints.contains(nextEndpoint)) {
+            _transportStatus.value = "RELAYING • next hop unavailable"
+            return
+        }
+
+        forwardPacket(nextEndpoint, nextHopId, packet, plaintext, nextHopCount)'''
+          new = '''        if (nextEndpoint == null || !connectedEndpoints.contains(nextEndpoint)) {
+            _transportStatus.value = "RELAYING • next hop unavailable"
+            forwardingPackets.remove(packet.messageId)
+            return
+        }
+
+        forwardPacket(nextEndpoint, nextHopId, packet, plaintext, nextHopCount)'''
+          if old not in s:
+              raise SystemExit('next-hop block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        scope.launch { sendToEndpoint(nextEndpoint, forwarded) }'''
+          new = '''        scope.launch {
+            val result = sendToEndpoint(nextEndpoint, forwarded)
+            if (result.isSuccess) {
+                seenPackets.add(packet.messageId)
+                _transportStatus.value = "FORWARDED • hop $nextHopCount • ${selfId.takeLast(4)} → ${nextHopId.takeLast(4)}"
+            } else {
+                // A failed send must not permanently deduplicate the packet.
+                forwardingPackets.remove(packet.messageId)
+            }
+        }'''
+          if old not in s:
+              raise SystemExit('forward send block not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          print('patched MockCommunicationTransport.kt')
+          PY
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/offgrid/app/data/transport/MockCommunicationTransport.kt
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: stabilize mesh routing [mesh-repair]"
+          git push origin feature/hop-encryption-relay
+
+      - name: Remove one-shot workflow
+        run: |
+          git rm .github/workflows/repair-mesh-reliability.yml
+          git commit -m "chore: remove one-shot repair workflow [mesh-repair]"
+          git push origin feature/hop-encryption-relay
