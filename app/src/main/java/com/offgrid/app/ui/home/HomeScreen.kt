@@ -123,9 +123,7 @@ fun HomeScreen(
                 }
             }
 
-            item {
-                EmergencyEntry(onEmergency)
-            }
+            item { EmergencyEntry(onEmergency) }
 
             item {
                 Row(
@@ -143,14 +141,10 @@ fun HomeScreen(
             if (nodes.isEmpty()) {
                 item { EmptyNearbyCard(transportStatus) }
             } else {
-                items(nodes, key = { "node:${it.id}" }) { node ->
-                    NearbyRow(node) { onSelectNode(node) }
-                }
+                items(nodes, key = { "node:${it.id}" }) { node -> NearbyRow(node) { onSelectNode(node) } }
             }
 
-            item {
-                Text("Recent conversations", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            }
+            item { Text("Recent conversations", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
             if (recent.isEmpty()) {
                 item { EmptyConversationCard() }
             } else {
@@ -164,15 +158,10 @@ fun HomeScreen(
 
 @Composable
 private fun IdentityStrip(identity: IdentityManager, linkState: LinkState, nearbyCount: Int) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Surface(
-            modifier = Modifier.size(48.dp),
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.secondary.copy(alpha = .13f),
-        ) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("◎", color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.titleLarge) } }
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Surface(modifier = Modifier.size(48.dp), shape = CircleShape, color = MaterialTheme.colorScheme.secondary.copy(alpha = .13f)) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("◎", color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.titleLarge) }
+        }
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(identity.displayName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(identity.nodeId, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
@@ -192,15 +181,16 @@ private fun NetworkMiniMap(nodes: List<Node>, onSelectNode: (Node) -> Unit) {
             node.id to Offset(.5f + (.31f * cos(angle)).toFloat(), .5f + (.31f * sin(angle)).toFloat())
         }.toMap()
     }
-    Box(
-        Modifier.fillMaxWidth().height(220.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(24.dp))
-    ) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+
+    Box(Modifier.fillMaxWidth().height(220.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(24.dp))) {
         Canvas(Modifier.fillMaxSize().padding(12.dp)) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val radius = minOf(size.width, size.height) * .30f
             for (i in 1..3) {
                 drawCircle(
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = .045f),
+                    color = primaryColor.copy(alpha = .045f),
                     radius = radius * i / 3f,
                     center = center,
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
@@ -208,7 +198,7 @@ private fun NetworkMiniMap(nodes: List<Node>, onSelectNode: (Node) -> Unit) {
             }
             positions.values.forEach { p ->
                 drawLine(
-                    color = MaterialTheme.colorScheme.secondary.copy(alpha = .25f),
+                    color = secondaryColor.copy(alpha = .25f),
                     start = center,
                     end = Offset(p.x * size.width, p.y * size.height),
                     strokeWidth = 1.5.dp.toPx(),
@@ -216,14 +206,9 @@ private fun NetworkMiniMap(nodes: List<Node>, onSelectNode: (Node) -> Unit) {
                 )
             }
         }
-        Surface(
-            modifier = Modifier.align(Alignment.Center).size(64.dp),
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
-            tonalElevation = 2.dp,
-        ) {
+        Surface(modifier = Modifier.align(Alignment.Center).size(64.dp), shape = CircleShape, color = primaryColor.copy(alpha = .14f), tonalElevation = 2.dp) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text("◉", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium)
+                Text("◉", color = primaryColor, style = MaterialTheme.typography.titleMedium)
                 Text("YOU", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             }
         }
@@ -234,7 +219,7 @@ private fun NetworkMiniMap(nodes: List<Node>, onSelectNode: (Node) -> Unit) {
             Surface(
                 modifier = Modifier.align(Alignment.TopStart).padding(start = (x * 210 - 27).dp, top = (y * 210 - 27).dp).size(54.dp),
                 shape = CircleShape,
-                color = if (node.status == NodeStatus.CONNECTED) MaterialTheme.colorScheme.secondary.copy(alpha = .16f) else MaterialTheme.colorScheme.surfaceVariant,
+                color = if (node.status == NodeStatus.CONNECTED) secondaryColor.copy(alpha = .16f) else MaterialTheme.colorScheme.surfaceVariant,
                 tonalElevation = 2.dp,
                 onClick = { onSelectNode(node) },
             ) {
@@ -250,11 +235,7 @@ private fun NetworkMiniMap(nodes: List<Node>, onSelectNode: (Node) -> Unit) {
 
 @Composable
 private fun EmergencyEntry(onEmergency: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onEmergency),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer,
-    ) {
+    Surface(modifier = Modifier.fillMaxWidth().clickable(onClick = onEmergency), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
         Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(modifier = Modifier.size(40.dp), shape = CircleShape, color = MaterialTheme.colorScheme.secondary.copy(alpha = .16f)) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("!", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold) }
@@ -288,12 +269,7 @@ private fun EmptyConversationCard() {
 
 @Composable
 private fun NearbyRow(node: Node, onClick: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-    ) {
+    Surface(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             StatusDot(node.status)
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
@@ -308,12 +284,7 @@ private fun NearbyRow(node: Node, onClick: () -> Unit) {
 
 @Composable
 private fun RecentConversationRow(conversation: Conversation, onClick: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-    ) {
+    Surface(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(modifier = Modifier.size(44.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = .10f)) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("◎", color = MaterialTheme.colorScheme.primary) }
@@ -337,6 +308,7 @@ private fun nodeSubtitle(node: Node): String = when (node.status) {
     NodeStatus.OFFLINE -> "Not reachable"
 }
 
+@Composable
 private fun nodeColor(status: NodeStatus) = when (status) {
     NodeStatus.CONNECTED -> MaterialTheme.colorScheme.primary
     NodeStatus.CONNECTING -> MaterialTheme.colorScheme.secondary
