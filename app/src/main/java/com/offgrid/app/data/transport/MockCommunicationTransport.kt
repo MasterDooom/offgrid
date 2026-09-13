@@ -56,7 +56,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val router = HopRouter(selfId = "")
+    private val router = HopRouter()
 
     @Volatile private var selfId = ""
     @Volatile private var selfName = ""
@@ -192,6 +192,7 @@ class MockCommunicationTransport(private val context: Context) : CommunicationTr
     override suspend fun start(selfId: String, selfName: String) {
         this.selfId = selfId
         this.selfName = selfName
+        router.setIdentity(selfId)
         if (started) return
         started = true
         _transportStatus.value = "Starting advertising + discovery…"
