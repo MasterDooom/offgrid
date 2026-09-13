@@ -69,31 +69,40 @@ fun OffGridApp(
     }
 
     fun openChat(node: Node) {
-        screen = Screen.Chat(node)
+        // Recent conversations are keyed by stable logical ID, while live discovery nodes
+        // carry a Nearby endpoint ID in node.id. Always resolve back to the live node first.
+        val liveNode = nodes.find { it.logicalId == node.logicalId } ?: node
+        screen = Screen.Chat(liveNode)
+
         // If another real node is already connected, let the mesh router use it as a relay
         // instead of immediately forcing a direct connection to the destination.
         val relayAvailable = nodes.any {
-            it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != node.logicalId
+            it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId
         }
-        if (node.status != NodeStatus.CONNECTED && !relayAvailable) {
-            safeLaunch { transport.connectToDevice(node) }
+        if (liveNode.status != NodeStatus.CONNECTED && !relayAvailable) {
+            safeLaunch { transport.connectToDevice(liveNode) }
         }
     }
 
     MaterialTheme(colorScheme = OffGridColors) {
         when (val current = screen) {
-            Screen.Home -> HomeScreen(identity, nodes, linkState, transportStatus, conversations,
+            Screen.Home -> HomeScreen(
+                identity, nodes, linkState, transportStatus, conversations,
                 onSelectNode = { screen = Screen.Profile(it) },
-                onOpenConversation = { openChat(it) }, onDiscover = { safeLaunch { transport.discoverDevices() } },
-                onEmergency = { screen = Screen.Emergency }, onOpenSettings = { screen = Screen.DemoSetup },
-                onOpenNetwork = { screen = Screen.Network })
+                onOpenConversation = { openChat(it) },
+                onDiscover = { safeLaunch { transport.discoverDevices() } },
+                onEmergency = { screen = Screen.Emergency },
+                onOpenSettings = { screen = Screen.DemoSetup },
+                onOpenNetwork = { screen = Screen.Network },
+            )
             is Screen.Profile -> {
-                val liveNode = nodes.find { it.id == current.node.id } ?: current.node
+                val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node
                 ProfileScreen(liveNode, onBack = { screen = Screen.Home }, onMessage = { openChat(liveNode) })
             }
             is Screen.Chat -> {
-                val liveNode = nodes.find { it.id == current.node.id } ?: current.node
-                val conversation = conversations[liveNode.id]
+                val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node
+                // IMPORTANT: conversations are keyed by stable logical ID, not Nearby endpoint ID.
+                val conversation = conversations[liveNode.logicalId]
                 val relayAvailable = nodes.any {
                     it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId
                 }
@@ -115,10 +124,18 @@ fun OffGridApp(
                 onSelectNode = { screen = Screen.Profile(it) },
                 transportStatus = transportStatus,
             )
-            Screen.Emergency -> EmergencyScreen(nodes, sos, onBack = { screen = Screen.Home },
-                onActivate = { safeLaunch { emergency.activate(scope, it) } }, onCancel = { emergency.cancel() })
-            Screen.DemoSetup -> DemoSetupScreen(identity, linkState, onBack = { screen = Screen.Home },
-                onApply = { _, _, _ -> screen = Screen.Home }, onTestConnection = { safeLaunch { transport.discoverDevices() } })
+            Screen.Emergency -> EmergencyScreen(
+                nodes, sos,
+                onBack = { screen = Screen.Home },
+                onActivate = { safeLaunch { emergency.activate(scope, it) } },
+                onCancel = { emergency.cancel() },
+            )
+            Screen.DemoSetup -> DemoSetupScreen(
+                identity, linkState,
+                onBack = { screen = Screen.Home },
+                onApply = { _, _, _ -> screen = Screen.Home },
+                onTestConnection = { safeLaunch { transport.discoverDevices() } },
+            )
         }
     }
 }
