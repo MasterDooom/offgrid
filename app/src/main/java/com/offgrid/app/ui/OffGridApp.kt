@@ -70,7 +70,14 @@ fun OffGridApp(
 
     fun openChat(node: Node) {
         screen = Screen.Chat(node)
-        safeLaunch { if (node.status != NodeStatus.CONNECTED) transport.connectToDevice(node) }
+        // If another real node is already connected, let the mesh router use it as a relay
+        // instead of immediately forcing a direct connection to the destination.
+        val relayAvailable = nodes.any {
+            it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != node.logicalId
+        }
+        if (node.status != NodeStatus.CONNECTED && !relayAvailable) {
+            safeLaunch { transport.connectToDevice(node) }
+        }
     }
 
     MaterialTheme(colorScheme = OffGridColors) {
@@ -87,18 +94,27 @@ fun OffGridApp(
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 val conversation = conversations[liveNode.id]
+                val relayAvailable = nodes.any {
+                    it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId
+                }
                 ChatScreen(
                     liveNode,
                     conversation?.messages ?: emptyList(),
                     identity.nodeId,
-                    canSend = liveNode.status == NodeStatus.CONNECTED && !liveNode.isSimulated,
+                    canSend = !liveNode.isSimulated && (liveNode.status == NodeStatus.CONNECTED || relayAvailable),
                     onBack = { screen = Screen.Home },
                     onSend = { safeLaunch { messaging.send(liveNode, it) } },
                     transportStatus = transportStatus,
                 )
             }
-            Screen.Network -> NetworkScreen(nodes, identity.nodeId, identity.displayName,
-                onBack = { screen = Screen.Home }, onSelectNode = { screen = Screen.Profile(it) })
+            Screen.Network -> NetworkScreen(
+                nodes,
+                identity.nodeId,
+                identity.displayName,
+                onBack = { screen = Screen.Home },
+                onSelectNode = { screen = Screen.Profile(it) },
+                transportStatus = transportStatus,
+            )
             Screen.Emergency -> EmergencyScreen(nodes, sos, onBack = { screen = Screen.Home },
                 onActivate = { safeLaunch { emergency.activate(scope, it) } }, onCancel = { emergency.cancel() })
             Screen.DemoSetup -> DemoSetupScreen(identity, linkState, onBack = { screen = Screen.Home },
