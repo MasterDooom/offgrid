@@ -2,7 +2,7 @@ package com.offgrid.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,6 +21,7 @@ import com.offgrid.app.data.transport.MockCommunicationTransport
 import com.offgrid.app.ui.chat.ChatScreen
 import com.offgrid.app.ui.emergency.EmergencyScreen
 import com.offgrid.app.ui.home.HomeScreen
+import com.offgrid.app.ui.network.NetworkScreen
 import com.offgrid.app.ui.profile.ProfileScreen
 import com.offgrid.app.ui.settings.DemoSetupScreen
 import kotlinx.coroutines.CancellationException
@@ -32,16 +33,16 @@ sealed class Screen {
     data class Chat(val node: Node) : Screen()
     data object Emergency : Screen()
     data object DemoSetup : Screen()
+    data object Network : Screen()
 }
 
-private val OffGridColors = darkColorScheme(
-    primary = Color(0xFF34D399),
-    onPrimary = Color(0xFF00201A),
-    secondary = Color(0xFF60A5FA),
-    background = Color(0xFF0B1210),
-    surface = Color(0xFF121B18),
-    surfaceVariant = Color(0xFF1B2622),
-    error = Color(0xFFEF4444),
+private val OffGridColors = lightColorScheme(
+    primary = Color(0xFF2F80ED), onPrimary = Color.White,
+    primaryContainer = Color(0xFFE8F2FF), onPrimaryContainer = Color(0xFF0B315E),
+    secondary = Color(0xFFE84D9B), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFFFE6F2), onSecondaryContainer = Color(0xFF5E153D),
+    background = Color(0xFFF8FAFF), surface = Color.White, surfaceVariant = Color(0xFFF0F4FA),
+    onSurface = Color(0xFF18212F), onSurfaceVariant = Color(0xFF657184), error = Color(0xFFD92D55),
 )
 
 @Composable
@@ -53,7 +54,6 @@ fun OffGridApp(
 ) {
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
     val scope = rememberCoroutineScope()
-
     val nodes by transport.discoveredNodes.collectAsState()
     val linkState by transport.linkState.collectAsState()
     val transportStatus by transport.transportStatus.collectAsState()
@@ -64,88 +64,39 @@ fun OffGridApp(
 
     fun safeLaunch(block: suspend () -> Unit) {
         scope.launch {
-            try {
-                block()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                // Never let a failed nearby/UI operation crash the app.
-            }
+            try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { }
         }
     }
 
     fun openChat(node: Node) {
-        // The chat is opened immediately. Connection work happens asynchronously.
         screen = Screen.Chat(node)
-        safeLaunch {
-            if (node.status != NodeStatus.CONNECTED) {
-                transport.connectToDevice(node)
-            }
-        }
+        safeLaunch { if (node.status != NodeStatus.CONNECTED) transport.connectToDevice(node) }
     }
 
     MaterialTheme(colorScheme = OffGridColors) {
         when (val current = screen) {
-            is Screen.Home -> HomeScreen(
-                identity = identity,
-                nodes = nodes,
-                linkState = linkState,
-                transportStatus = transportStatus,
-                conversations = conversations,
-                onSelectNode = { node -> screen = Screen.Profile(node) },
-                onOpenConversation = { node -> openChat(node) },
-                onDiscover = { safeLaunch { transport.discoverDevices() } },
-                onEmergency = { screen = Screen.Emergency },
-                onOpenSettings = { screen = Screen.DemoSetup },
-            )
-
+            Screen.Home -> HomeScreen(identity, nodes, linkState, transportStatus, conversations,
+                onSelectNode = { screen = Screen.Profile(it) },
+                onOpenConversation = { openChat(it) }, onDiscover = { safeLaunch { transport.discoverDevices() } },
+                onEmergency = { screen = Screen.Emergency }, onOpenSettings = { screen = Screen.DemoSetup },
+                onOpenNetwork = { screen = Screen.Network })
             is Screen.Profile -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
-                ProfileScreen(
-                    node = liveNode,
-                    onBack = { screen = Screen.Home },
-                    onMessage = { openChat(liveNode) },
-                )
+                ProfileScreen(liveNode, onBack = { screen = Screen.Home }, onMessage = { openChat(liveNode) })
             }
-
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 val conversation = conversations[liveNode.id]
-                // Connection state is per selected endpoint, not global. This matters when A is
-                // connected to B while C is also visible in the nearby list.
-                val canSend = liveNode.status == NodeStatus.CONNECTED && !liveNode.isSimulated
-                ChatScreen(
-                    node = liveNode,
-                    messages = conversation?.messages ?: emptyList(),
-                    selfId = identity.nodeId,
-                    canSend = canSend,
-                    onBack = { screen = Screen.Home },
-                    onSend = { text ->
-                        safeLaunch {
-                            // The send button is only enabled for a connected selected peer.
-                            // If that peer drops between frames, send() returns a failure rather
-                            // than throwing through the UI.
-                            messaging.send(liveNode, text)
-                        }
-                    },
-                )
+                ChatScreen(liveNode, conversation?.messages ?: emptyList(), identity.nodeId,
+                    canSend = liveNode.status == NodeStatus.CONNECTED && !liveNode.isSimulated,
+                    onBack = { screen = Screen.Home }, onSend = { safeLaunch { messaging.send(liveNode, it) } })
             }
-
-            is Screen.Emergency -> EmergencyScreen(
-                nodes = nodes,
-                sos = sos,
-                onBack = { screen = Screen.Home },
-                onActivate = { message -> safeLaunch { emergency.activate(scope, message) } },
-                onCancel = { emergency.cancel() },
-            )
-
-            is Screen.DemoSetup -> DemoSetupScreen(
-                identity = identity,
-                linkState = linkState,
-                onBack = { screen = Screen.Home },
-                onApply = { _, _, _ -> screen = Screen.Home },
-                onTestConnection = { safeLaunch { transport.discoverDevices() } },
-            )
+            Screen.Network -> NetworkScreen(nodes, identity.nodeId, identity.displayName,
+                onBack = { screen = Screen.Home }, onSelectNode = { screen = Screen.Profile(it) })
+            Screen.Emergency -> EmergencyScreen(nodes, sos, onBack = { screen = Screen.Home },
+                onActivate = { safeLaunch { emergency.activate(scope, it) } }, onCancel = { emergency.cancel() })
+            Screen.DemoSetup -> DemoSetupScreen(identity, linkState, onBack = { screen = Screen.Home },
+                onApply = { _, _, _ -> screen = Screen.Home }, onTestConnection = { safeLaunch { transport.discoverDevices() } })
         }
     }
 }
