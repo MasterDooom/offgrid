@@ -12,10 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -82,7 +82,9 @@ fun NetworkScreen(
                 Text("⚙", color = Navy, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(12.dp))
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NetworkTab("Local Map", true); NetworkTab("List", false); NetworkTab("Diagnostics", false)
+                NetworkTab("Local Map", true)
+                NetworkTab("List", false)
+                NetworkTab("Diagnostics", false)
             }
             MapCard(nodes, selfId, selfName, { node -> selected = node; onSelectNode(node) })
             if (selected != null) {
@@ -98,13 +100,14 @@ fun NetworkScreen(
 }
 
 @Composable private fun NetworkTab(label: String, selected: Boolean) {
-    Surface(Modifier.weight(1f, fill = true), shape = RoundedCornerShape(14.dp), color = if (selected) Color.White else MaterialTheme.colorScheme.surfaceVariant, tonalElevation = if (selected) 2.dp else 0.dp) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = if (selected) Color.White else MaterialTheme.colorScheme.surfaceVariant, tonalElevation = if (selected) 2.dp else 0.dp) {
         Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) { Text(label, color = if (selected) Blue else Navy, style = MaterialTheme.typography.labelMedium) }
     }
 }
 
 @Composable private fun MapCard(nodes: List<Node>, selfId: String, selfName: String, onSelect: (Node) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(410.dp)) {
+        val cardWidth = maxWidth
         Surface(Modifier.fillMaxSize(), RoundedCornerShape(18.dp), color = MapBg) {
             Box(Modifier.fillMaxSize()) {
                 Canvas(Modifier.fillMaxSize()) {
@@ -131,7 +134,7 @@ fun NetworkScreen(
                     val a = i.toDouble() / maxOf(nodes.take(5).size, 1) * Math.PI * 2 - Math.PI / 2
                     val x = (.5 + .37 * cos(a)).toFloat(); val y = (.47 + .38 * sin(a)).toFloat()
                     val connected = node.status == NodeStatus.CONNECTED
-                    Surface(Modifier.align(Alignment.TopStart).padding(start = maxWidth * x - 30.dp, top = 410.dp * y - 30.dp).size(60.dp).clickable { onSelect(node) }, CircleShape, Color(0xCC183043)) {
+                    Surface(Modifier.align(Alignment.TopStart).padding(start = cardWidth * x - 30.dp, top = 410.dp * y - 30.dp).size(60.dp).clickable { onSelect(node) }, CircleShape, Color(0xCC183043)) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                             Box(Modifier.size(15.dp).background(if (connected) Green else Blue, CircleShape))
                             Text(node.name.take(8), color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -180,7 +183,7 @@ fun NetworkScreen(
 }
 
 @Composable private fun DetailMetric(icon: String, label: String, value: String) {
-    Surface(Modifier.weight(1f), RoundedCornerShape(10.dp), MaterialTheme.colorScheme.surfaceVariant) {
+    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(10.dp), MaterialTheme.colorScheme.surfaceVariant) {
         Column(Modifier.padding(9.dp)) { Text(icon, color = Green); Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall); Text(value, color = Navy, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelSmall) }
     }
 }
