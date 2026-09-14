@@ -40,20 +40,13 @@ sealed class Screen {
 }
 
 private val OffGridColors = lightColorScheme(
-    primary = Color(0xFF2563EB),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFEAF2FF),
-    onPrimaryContainer = Color(0xFF12346B),
-    secondary = Color(0xFF18A46B),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE9F8F1),
-    onSecondaryContainer = Color(0xFF0B4A32),
-    background = Color(0xFFF9FAFC),
-    surface = Color.White,
-    surfaceVariant = Color(0xFFF1F4F8),
-    onSurface = Color(0xFF101828),
-    onSurfaceVariant = Color(0xFF667085),
-    error = Color(0xFFD92D3F),
+    primary = Color(0xFF2563EB), onPrimary = Color.White,
+    primaryContainer = Color(0xFFEAF2FF), onPrimaryContainer = Color(0xFF12346B),
+    secondary = Color(0xFF18A46B), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE9F8F1), onSecondaryContainer = Color(0xFF0B4A32),
+    background = Color(0xFFF9FAFC), surface = Color.White,
+    surfaceVariant = Color(0xFFF1F4F8), onSurface = Color(0xFF101828),
+    onSurfaceVariant = Color(0xFF667085), error = Color(0xFFD92D3F),
 )
 
 @Composable
@@ -68,8 +61,7 @@ fun OffGridApp(
     val nodes by transport.discoveredNodes.collectAsState()
     val linkState by transport.linkState.collectAsState()
     val statusFlow = remember(transport) {
-        (transport as? WifiDirectCommunicationTransport)?.transportStatus
-            ?: MutableStateFlow("Offline transport")
+        (transport as? WifiDirectCommunicationTransport)?.transportStatus ?: MutableStateFlow("Offline transport")
     }
     val transportStatus by statusFlow.collectAsState()
     val conversations by messaging.conversations.collectAsState()
@@ -92,79 +84,40 @@ fun OffGridApp(
     fun openChat(node: Node) {
         val liveNode = nodes.find { it.logicalId == node.logicalId } ?: node
         screen = Screen.Chat(liveNode)
-        val relayAvailable = nodes.any {
-            it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId
-        }
-        if (liveNode.status != NodeStatus.CONNECTED && !relayAvailable) {
-            safeLaunch { transport.connectToDevice(liveNode) }
-        }
+        val relayAvailable = nodes.any { it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId }
+        if (liveNode.status != NodeStatus.CONNECTED && !relayAvailable) safeLaunch { transport.connectToDevice(liveNode) }
     }
 
     MaterialTheme(colorScheme = OffGridColors) {
         when (val current = screen) {
-            Screen.Home -> HomeScreen(
-                identity = identity,
-                nodes = nodes,
-                linkState = linkState,
-                transportStatus = transportStatus,
-                conversations = conversations,
-                onSelectNode = { screen = Screen.Profile(it) },
-                onOpenConversation = { openChat(it) },
+            Screen.Home -> HomeScreen(identity, nodes, linkState, transportStatus, conversations,
+                onSelectNode = { screen = Screen.Profile(it) }, onOpenConversation = { openChat(it) },
                 onDiscover = { safeLaunch { transport.discoverDevices() } },
-                onEmergency = { screen = Screen.Emergency },
-                onOpenSettings = { screen = Screen.DemoSetup },
-                onOpenNetwork = { screen = Screen.Network },
-                onOpenMessages = { screen = Screen.Messages },
-            )
-            Screen.Messages -> MessagesScreen(
-                conversations = conversations,
-                onOpenConversation = { openChat(it) },
-                onHome = { screen = Screen.Home },
-                onNetwork = { screen = Screen.Network },
-            )
+                onEmergency = { screen = Screen.Emergency }, onOpenSettings = { screen = Screen.DemoSetup },
+                onOpenNetwork = { screen = Screen.Network }, onOpenMessages = { screen = Screen.Messages })
+            Screen.Messages -> MessagesScreen(conversations, { openChat(it) }, { screen = Screen.Home }, { screen = Screen.Network })
             is Screen.Profile -> {
                 val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node
-                ProfileScreen(liveNode, onBack = { screen = Screen.Home }, onMessage = { openChat(liveNode) })
+                ProfileScreen(liveNode, { screen = Screen.Home }, { openChat(liveNode) })
             }
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node
                 val conversation = conversations[liveNode.logicalId]
-                val relayAvailable = nodes.any {
-                    it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId
-                }
-                ChatScreen(
-                    liveNode,
-                    conversation?.messages ?: emptyList(),
-                    identity.nodeId,
+                val relayAvailable = nodes.any { it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId }
+                ChatScreen(liveNode, conversation?.messages ?: emptyList(), identity.nodeId,
                     canSend = !liveNode.isSimulated && (liveNode.status == NodeStatus.CONNECTED || relayAvailable),
-                    onBack = { screen = Screen.Home },
-                    onSend = { safeLaunch { messaging.send(liveNode, it) } },
-                    transportStatus = transportStatus,
-                )
+                    onBack = { screen = Screen.Home }, onSend = { safeLaunch { messaging.send(liveNode, it) } }, transportStatus = transportStatus)
             }
-            Screen.Network -> NetworkScreen(
-                nodes = nodes,
-                selfId = identity.nodeId,
-                selfName = identity.displayName,
-                onBack = { screen = Screen.Home },
-                onSelectNode = { screen = Screen.Profile(it) },
-                transportStatus = transportStatus,
-                onHome = { screen = Screen.Home },
-                onMessages = { screen = Screen.Messages },
-            )
-            Screen.Emergency -> EmergencyScreen(
-                nodes, sos,
-                onBack = { screen = Screen.Home },
-                onActivate = { safeLaunch { emergency.activate(scope, it) } },
-                onCancel = { emergency.cancel() },
-            )
-            Screen.DemoSetup -> DemoSetupScreen(
-                identity, linkState,
-                onBack = { screen = Screen.Home },
-                onApply = { _, _, _ -> screen = Screen.Home },
-                onTestConnection = { safeLaunch { transport.discoverDevices() } },
-                onRename = { newName -> identity.displayName = newName },
-            )
+            Screen.Network -> NetworkScreen(nodes, identity.nodeId, identity.displayName, { screen = Screen.Home },
+                { screen = Screen.Profile(it) }, transportStatus, { screen = Screen.Home }, { screen = Screen.Messages })
+            Screen.Emergency -> EmergencyScreen(nodes, sos, { screen = Screen.Home },
+                { safeLaunch { emergency.activate(scope, it) } }, { emergency.cancel() })
+            Screen.DemoSetup -> DemoSetupScreen(identity, linkState, { screen = Screen.Home },
+                { _, _, _ -> screen = Screen.Home }, { safeLaunch { transport.discoverDevices() } },
+                { newName ->
+                    identity.displayName = newName
+                    (transport as? WifiDirectCommunicationTransport)?.updateDisplayName(newName)
+                })
         }
     }
 }
