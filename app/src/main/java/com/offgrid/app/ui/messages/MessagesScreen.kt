@@ -1,5 +1,6 @@
 package com.offgrid.app.ui.messages
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,7 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -34,11 +35,11 @@ import com.offgrid.app.data.model.Conversation
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.model.NodeStatus
 
-private val Navy = androidx.compose.ui.graphics.Color(0xFF10213A)
-private val Blue = androidx.compose.ui.graphics.Color(0xFF1769FF)
-private val Green = androidx.compose.ui.graphics.Color(0xFF08A66A)
-private val SoftGreen = androidx.compose.ui.graphics.Color(0xFFDDF7EC)
-private val SoftBlue = androidx.compose.ui.graphics.Color(0xFFE8F0FF)
+private val Navy = Color(0xFF10213A)
+private val Blue = Color(0xFF1769FF)
+private val Green = Color(0xFF08A66A)
+private val SoftGreen = Color(0xFFDDF7EC)
+private val SoftBlue = Color(0xFFE8F0FF)
 
 @Composable
 fun MessagesScreen(
@@ -51,9 +52,7 @@ fun MessagesScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = { BottomBar(onHome, {}, onNetwork) },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { }, containerColor = Blue, contentColor = androidx.compose.ui.graphics.Color.White) { Text("✎", style = MaterialTheme.typography.titleLarge) }
-        },
+        floatingActionButton = { FloatingActionButton(onClick = { }, containerColor = Blue, contentColor = Color.White) { Text("✎", style = MaterialTheme.typography.titleLarge) } },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 10.dp, top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -65,10 +64,7 @@ fun MessagesScreen(
                 IconButton(onClick = {}) { Text("⋮", color = Navy, style = MaterialTheme.typography.titleLarge) }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Tab("All", true)
-                Tab("Unread  2", false)
-                Tab("Groups", false)
-                Tab("SOS", false)
+                Tab("All", true); Tab("Unread  2", false); Tab("Groups", false); Tab("SOS", false)
             }
             if (recent.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -90,7 +86,7 @@ fun MessagesScreen(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = if (selected) Blue else Navy, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, style = MaterialTheme.typography.labelLarge)
         Spacer(Modifier.size(8.dp))
-        if (selected) Box(Modifier.size(width = 44.dp, height = 2.dp).padding(horizontal = 0.dp)) { Box(Modifier.fillMaxSize()) }
+        Box(Modifier.size(width = if (selected) 44.dp else 0.dp, height = 2.dp).background(Blue))
     }
 }
 
