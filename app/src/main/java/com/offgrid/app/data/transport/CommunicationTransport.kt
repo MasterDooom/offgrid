@@ -11,7 +11,6 @@ interface CommunicationTransport {
     val discoveredNodes: StateFlow<List<Node>>
     val linkState: StateFlow<LinkState>
     val incomingMessages: Flow<Message>
-    val transportStatus: StateFlow<String>
 
     suspend fun start(selfId: String, selfName: String)
     suspend fun discoverDevices()
