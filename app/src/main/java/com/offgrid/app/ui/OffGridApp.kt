@@ -97,8 +97,6 @@ fun OffGridApp(
     }
 
     fun openChat(node: Node) {
-        // The Android P2P device address is stable for the discovered row even after the
-        // handshake replaces its logical ID. Always refresh by physical row ID here.
         val liveNode = nodes.find { it.id == node.id } ?: node
         screen = Screen.Chat(liveNode)
         val relayAvailable = nodes.any {
@@ -116,18 +114,20 @@ fun OffGridApp(
                 nodes = nodes,
                 linkState = linkState,
                 transportStatus = transportStatus,
+                conversations = conversations,
                 onSelectNode = { screen = Screen.Profile(it) },
                 onOpenConversation = { openChat(it) },
                 onDiscover = { safeLaunch { transport.discoverDevices() } },
                 onEmergency = { screen = Screen.Emergency },
                 onOpenSettings = { screen = Screen.DemoSetup },
+                onOpenNetwork = { screen = Screen.Network },
                 onOpenMessages = { screen = Screen.Messages },
             )
             Screen.Messages -> MessagesScreen(
                 conversations = conversations,
                 onOpenConversation = { openChat(it) },
                 onHome = { screen = Screen.Home },
-                onSettings = { screen = Screen.DemoSetup },
+                onNetwork = { screen = Screen.Network },
             )
             is Screen.Profile -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
