@@ -1,6 +1,7 @@
 package com.offgrid.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -9,23 +10,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import com.offgrid.app.data.repository.EmergencyRepository
+import androidx.core.content.ContextCompat.startForegroundService
 import com.offgrid.app.data.repository.IdentityManager
-import com.offgrid.app.data.repository.MessagingRepository
-import com.offgrid.app.data.transport.CommunicationTransport
-import com.offgrid.app.data.transport.WifiDirectCommunicationTransport
+import com.offgrid.app.data.runtime.OffGridRuntime
+import com.offgrid.app.service.OffGridNetworkService
 import com.offgrid.app.ui.OffGridApp
 
 class MainActivity : ComponentActivity() {
     private lateinit var identity: IdentityManager
-    private lateinit var transport: CommunicationTransport
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (result.values.all { it }) {
-            startTransport()
+        val nearbyGranted = result.filterKeys { it != Manifest.permission.POST_NOTIFICATIONS }.values.all { it }
+        if (nearbyGranted) {
+            startMeshService()
         } else {
             Toast.makeText(
                 this,
@@ -38,60 +37,42 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        identity = IdentityManager(applicationContext)
-        // Wi-Fi Direct is now the active physical transport for the app.
-        // Messaging, SOS, routing and hop encryption remain transport-agnostic.
-        transport = WifiDirectCommunicationTransport(applicationContext, lifecycleScope)
+        OffGridRuntime.initialize(applicationContext)
+        identity = OffGridRuntime.identity
 
         setContent {
-            val messaging = androidx.compose.runtime.remember {
-                MessagingRepository(transport, identity.nodeId, lifecycleScope)
-            }
-            val emergency = androidx.compose.runtime.remember {
-                EmergencyRepository(transport, messaging, identity.nodeId)
-            }
-
             OffGridApp(
                 identity = identity,
-                transport = transport,
-                messaging = messaging,
-                emergency = emergency,
+                transport = OffGridRuntime.transport,
+                messaging = OffGridRuntime.messaging,
+                emergency = OffGridRuntime.emergency,
             )
         }
 
-        if (hasNearbyPermissions()) startTransport()
+        if (hasRequiredPermissions()) startMeshService()
         else permissionLauncher.launch(requiredPermissions())
     }
 
-    private fun startTransport() {
-        lifecycleScope.launch {
-            runCatching {
-                transport.start(identity.nodeId, identity.displayName)
-            }.onFailure {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Wi-Fi Direct could not start: ${it.message ?: "unknown error"}",
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
-        }
+    private fun startMeshService() {
+        // This is intentionally started while the Activity is visible. Android restricts starting
+        // foreground services from the background on newer releases.
+        startForegroundService(
+            this,
+            Intent(this, OffGridNetworkService::class.java),
+        )
     }
 
-    private fun hasNearbyPermissions(): Boolean =
-        requiredPermissions().all {
+    private fun hasRequiredPermissions(): Boolean =
+        requiredPermissions().filter { it != Manifest.permission.POST_NOTIFICATIONS }.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
     private fun requiredPermissions(): Array<String> = buildList {
         if (Build.VERSION.SDK_INT >= 33) {
             add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            add(Manifest.permission.POST_NOTIFICATIONS)
         } else if (Build.VERSION.SDK_INT >= 29) {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }.toTypedArray()
-
-    override fun onDestroy() {
-        transport.stop()
-        super.onDestroy()
-    }
 }
