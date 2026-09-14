@@ -48,12 +48,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (hasRequiredPermissions() && !isLocationModeEnabled()) {
-            Toast.makeText(
-                this,
-                "Turn Location ON — Android requires Location Mode for Wi-Fi Direct discovery.",
-                Toast.LENGTH_LONG,
-            ).show()
+        if (hasRequiredPermissions()) {
+            // Re-issue the foreground-service start whenever the activity returns. If Android or an
+            // OEM reclaimed the service while the app was backgrounded, this brings the mesh back.
+            startMeshService()
+            if (!isLocationModeEnabled()) {
+                Toast.makeText(
+                    this,
+                    "Turn Location ON — Android requires Location Mode for Wi-Fi Direct discovery.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
     }
 
