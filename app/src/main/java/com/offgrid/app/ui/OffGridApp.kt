@@ -17,6 +17,7 @@ import com.offgrid.app.data.repository.EmergencyRepository
 import com.offgrid.app.data.repository.IdentityManager
 import com.offgrid.app.data.repository.MessagingRepository
 import com.offgrid.app.data.transport.CommunicationTransport
+import com.offgrid.app.data.transport.WifiDirectCommunicationTransport
 import com.offgrid.app.ui.chat.ChatScreen
 import com.offgrid.app.ui.emergency.EmergencyScreen
 import com.offgrid.app.ui.home.HomeScreen
@@ -24,6 +25,7 @@ import com.offgrid.app.ui.network.NetworkScreen
 import com.offgrid.app.ui.profile.ProfileScreen
 import com.offgrid.app.ui.settings.DemoSetupScreen
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 sealed class Screen {
@@ -55,7 +57,11 @@ fun OffGridApp(
     val scope = rememberCoroutineScope()
     val nodes by transport.discoveredNodes.collectAsState()
     val linkState by transport.linkState.collectAsState()
-    val transportStatus by transport.transportStatus.collectAsState()
+    val statusFlow = remember(transport) {
+        (transport as? WifiDirectCommunicationTransport)?.transportStatus
+            ?: MutableStateFlow("Offline transport")
+    }
+    val transportStatus by statusFlow.collectAsState()
     val conversations by messaging.conversations.collectAsState()
     val sos by emergency.sos.collectAsState()
 
