@@ -30,12 +30,10 @@ class MessagingRepository(
             try {
                 transport.incomingMessages.collect { message ->
                     try {
-                        // Always derive the conversation from stable logical identities.
-                        // A Nearby endpoint ID is temporary and must never create a second chat.
                         val conversationId = canonicalConversationId(message)
                         append(conversationId, message.copy(conversationId = conversationId))
                     } catch (_: Throwable) {
-                        // Never let a malformed packet crash the UI collector.
+                        // Ignore malformed incoming packets without killing the collector.
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -72,21 +70,29 @@ class MessagingRepository(
                 return@withLock
             }
 
-            val result = try {
-                transport.sendMessage(outgoing)
-            } catch (_: Throwable) {
-                Result.failure<Unit>(IllegalStateException("Message transport failed"))
+            // A discovered peer can be visible before the TCP data channel/handshake is ready.
+            // First try the existing route, then establish the physical link and retry once.
+            val firstAttempt = runCatching { transport.sendMessage(outgoing) }
+                .getOrElse { Result.failure(it) }
+
+            val result = if (firstAttempt.isSuccess) {
+                firstAttempt
+            } else {
+                val connection = runCatching { transport.connectToDevice(node) }
+                    .getOrElse { Result.failure(it) }
+                if (connection.isSuccess) {
+                    runCatching { transport.sendMessage(outgoing) }
+                        .getOrElse { Result.failure(it) }
+                } else {
+                    firstAttempt
+                }
             }
 
-            try {
-                replaceStatus(
-                    conversationId,
-                    outgoing.id,
-                    if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
-                )
-            } catch (_: Throwable) {
-                // Status rendering is best-effort and must never crash the app.
-            }
+            replaceStatus(
+                conversationId,
+                outgoing.id,
+                if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
+            )
         }
     }
 
@@ -106,29 +112,25 @@ class MessagingRepository(
             return@withLock Result.failure(error)
         }
 
-        val result = try {
-            transport.sendMessage(outgoing)
-        } catch (error: Throwable) {
-            Result.failure(error)
+        val firstAttempt = runCatching { transport.sendMessage(outgoing) }
+            .getOrElse { Result.failure(it) }
+        val result = if (firstAttempt.isSuccess) firstAttempt else {
+            val connection = runCatching { transport.connectToDevice(node) }
+                .getOrElse { Result.failure(it) }
+            if (connection.isSuccess) {
+                runCatching { transport.sendMessage(outgoing) }
+                    .getOrElse { Result.failure(it) }
+            } else firstAttempt
         }
 
-        try {
-            replaceStatus(
-                conversationId,
-                outgoing.id,
-                if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
-            )
-        } catch (_: Throwable) {
-            // Ignore UI-state update failure.
-        }
+        replaceStatus(
+            conversationId,
+            outgoing.id,
+            if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
+        )
         result
     }
 
-    /**
-     * The logical peer is the conversation key. For an outgoing message the peer is the
-     * recipient; for an incoming message the peer is the original sender. This remains true
-     * even when the packet travelled through one or more relay nodes.
-     */
     private fun canonicalConversationId(message: Message): String =
         if (message.senderId == selfId) {
             message.recipientNodeId ?: message.receiverId
@@ -148,10 +150,7 @@ class MessagingRepository(
                     logicalId = conversationId,
                 ),
             )
-
-        // Nearby may retry a payload. Never insert the same message twice.
         if (existing.messages.any { it.id == message.id }) return
-
         _conversations.value = current +
             (conversationId to existing.copy(messages = existing.messages + message))
     }
