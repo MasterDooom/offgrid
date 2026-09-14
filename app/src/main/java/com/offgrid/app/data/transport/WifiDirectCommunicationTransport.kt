@@ -463,7 +463,6 @@ class WifiDirectCommunicationTransport(
                     lastSeen = System.currentTimeMillis(),
                     hops = router.routeTo(logicalId)?.distance ?: 1,
                     isSimulated = false,
-                    capabilities = setOf(DeviceCapability.MESSAGING),
                     logicalId = logicalId,
                 )
             }
