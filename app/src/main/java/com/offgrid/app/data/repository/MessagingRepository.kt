@@ -30,7 +30,10 @@ class MessagingRepository(
             try {
                 transport.incomingMessages.collect { message ->
                     try {
-                        append(message.conversationId, message)
+                        // Always derive the conversation from stable logical identities.
+                        // A Nearby endpoint ID is temporary and must never create a second chat.
+                        val conversationId = canonicalConversationId(message)
+                        append(conversationId, message.copy(conversationId = conversationId))
                     } catch (_: Throwable) {
                         // Never let a malformed packet crash the UI collector.
                     }
@@ -44,22 +47,27 @@ class MessagingRepository(
     }
 
     fun conversationWith(node: Node): Conversation =
-        _conversations.value[node.id] ?: Conversation(id = node.id, peer = node)
+        _conversations.value[node.logicalId] ?: Conversation(
+            id = node.logicalId,
+            peer = node,
+        )
 
     suspend fun send(node: Node, text: String) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return
 
         sendMutex.withLock {
+            val conversationId = node.logicalId
             val outgoing = Message(
-                conversationId = node.id,
+                conversationId = conversationId,
                 senderId = selfId,
                 receiverId = node.id,
                 content = cleanText,
+                recipientNodeId = node.logicalId,
             )
 
             try {
-                append(node.id, outgoing)
+                append(conversationId, outgoing)
             } catch (_: Throwable) {
                 return@withLock
             }
@@ -72,7 +80,7 @@ class MessagingRepository(
 
             try {
                 replaceStatus(
-                    node.id,
+                    conversationId,
                     outgoing.id,
                     if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
                 )
@@ -83,15 +91,17 @@ class MessagingRepository(
     }
 
     suspend fun sendEmergency(node: Node, text: String): Result<Unit> = sendMutex.withLock {
+        val conversationId = node.logicalId
         val outgoing = Message(
-            conversationId = node.id,
+            conversationId = conversationId,
             senderId = selfId,
             receiverId = node.id,
             content = text,
             type = MessageType.EMERGENCY,
+            recipientNodeId = node.logicalId,
         )
         try {
-            append(node.id, outgoing)
+            append(conversationId, outgoing)
         } catch (error: Throwable) {
             return@withLock Result.failure(error)
         }
@@ -104,7 +114,7 @@ class MessagingRepository(
 
         try {
             replaceStatus(
-                node.id,
+                conversationId,
                 outgoing.id,
                 if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
             )
@@ -114,12 +124,29 @@ class MessagingRepository(
         result
     }
 
+    /**
+     * The logical peer is the conversation key. For an outgoing message the peer is the
+     * recipient; for an incoming message the peer is the original sender. This remains true
+     * even when the packet travelled through one or more relay nodes.
+     */
+    private fun canonicalConversationId(message: Message): String =
+        if (message.senderId == selfId) {
+            message.recipientNodeId ?: message.receiverId
+        } else {
+            message.senderId
+        }
+
     private fun append(conversationId: String, message: Message) {
+        if (conversationId.isBlank()) return
         val current = _conversations.value
         val existing = current[conversationId]
             ?: Conversation(
                 id = conversationId,
-                peer = Node(id = conversationId, name = conversationId),
+                peer = Node(
+                    id = message.senderId,
+                    name = message.senderId,
+                    logicalId = conversationId,
+                ),
             )
 
         // Nearby may retry a payload. Never insert the same message twice.

@@ -23,6 +23,8 @@ data class Node(
     val hops: Int = 1,
     val isSimulated: Boolean = false,
     val capabilities: Set<DeviceCapability> = setOf(DeviceCapability.MESSAGING),
+    /** Stable OFFGRID identity carried in the advertising name; [id] remains the Nearby endpoint id. */
+    val logicalId: String = id,
 )
 
 enum class MessageStatus { SENDING, DELIVERED, FAILED, RECEIVED }
@@ -38,6 +40,12 @@ data class Message(
     val timestamp: Long = System.currentTimeMillis(),
     val status: MessageStatus = MessageStatus.SENDING,
     val type: MessageType = MessageType.TEXT,
+    /** Stable destination identity used by the mesh router; endpoint ids are local to a link. */
+    val recipientNodeId: String? = null,
+    /** Number of mesh hops traversed so far. */
+    val hopCount: Int = 0,
+    /** True when this message arrived through an encrypted mesh hop. */
+    val hopEncrypted: Boolean = false,
 )
 
 data class Conversation(
