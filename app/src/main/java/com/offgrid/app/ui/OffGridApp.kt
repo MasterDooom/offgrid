@@ -134,6 +134,9 @@ fun OffGridApp(
                 onBack = { screen = Screen.Home },
                 onApply = { _, _, _ -> screen = Screen.Home },
                 onTestConnection = { safeLaunch { transport.discoverDevices() } },
+                onRename = { newName ->
+                    identity.displayName = newName
+                },
             )
         }
     }
