@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -52,57 +54,35 @@ fun NetworkScreen(
     onHome: (() -> Unit)? = null,
     onMessages: (() -> Unit)? = null,
 ) {
-    Scaffold(
-        bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                NavigationBarItem(false, onClick = { onHome?.invoke() ?: onBack() }, icon = { Text("⌂") }, label = { Text("Home") })
-                NavigationBarItem(false, onClick = { onMessages?.invoke() ?: onBack() }, icon = { Text("□") }, label = { Text("Messages") })
-                NavigationBarItem(true, onClick = {}, icon = { Text("⌘") }, label = { Text("Network") })
-            }
-        },
-    ) { padding ->
+    Scaffold(bottomBar = {
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            NavigationBarItem(selected = false, onClick = { onHome?.invoke() ?: onBack() }, icon = { Text("⌂") }, label = { Text("Home") })
+            NavigationBarItem(selected = false, onClick = { onMessages?.invoke() ?: onBack() }, icon = { Text("□") }, label = { Text("Messages") })
+            NavigationBarItem(selected = true, onClick = {}, icon = { Text("⌘") }, label = { Text("Network") })
+        }
+    }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).background(MaterialTheme.colorScheme.background)) {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 8.dp)) {
                 Text("Network", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text("See the people around you.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 NetworkTab("Local Map", true)
                 NetworkTab("List", false)
                 NetworkTab("Diagnostics", false)
             }
-
-            NetworkMap(
-                nodes = nodes,
-                selfId = selfId,
-                selfName = selfName,
-                onSelectNode = onSelectNode,
-                modifier = Modifier.fillMaxWidth().size(330.dp).padding(horizontal = 20.dp),
-            )
-
-            Surface(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
-                color = MaterialTheme.colorScheme.surface,
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                tonalElevation = 1.dp,
-            ) {
+            NetworkMap(nodes, selfId, selfName, onSelectNode, Modifier.fillMaxWidth().size(330.dp).padding(horizontal = 20.dp))
+            Surface(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                 Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     NetworkMetric(nodes.size.toString(), "devices")
                     NetworkMetric(nodes.count { it.status == NodeStatus.CONNECTED }.toString(), "linked")
                     NetworkMetric(nodes.maxOfOrNull { it.hops }?.toString() ?: "0", "max hops")
                 }
             }
-
             Text("Nearby devices", Modifier.padding(start = 20.dp, top = 14.dp, bottom = 6.dp), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-            LazyColumn(
-                Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
+            LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 items(nodes, key = { it.logicalId }) { node ->
-                    Surface(onClick = { onSelectNode(node) }, Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
+                    Surface(Modifier.fillMaxWidth().clickable { onSelectNode(node) }, color = MaterialTheme.colorScheme.surface) {
                         Row(Modifier.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             StatusDot(node.status)
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
@@ -129,10 +109,9 @@ fun NetworkScreen(
 
 @Composable
 private fun NetworkTab(label: String, selected: Boolean) {
-    Surface(
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-    ) { Text(label, Modifier.padding(horizontal = 13.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
+    Surface(shape = RoundedCornerShape(14.dp), color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
+        Text(label, Modifier.padding(horizontal = 13.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable
@@ -144,52 +123,41 @@ private fun NetworkMetric(value: String, label: String) {
 }
 
 @Composable
-private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, onSelectNode: (Node) -> Unit, modifier: Modifier = Modifier) {
+private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, onSelectNode: (Node) -> Unit, modifier: Modifier) {
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
     val surface = MaterialTheme.colorScheme.surface
-    val pulse by rememberInfiniteTransition(label = "network-pulse").animateFloat(
-        initialValue = .55f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "pulse",
-    )
     val visibleNodes = nodes.take(8)
+    val pulse by rememberInfiniteTransition(label = "network-pulse").animateFloat(.55f, 1f, infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse")
     val positions = remember(visibleNodes.map { it.logicalId }) {
         visibleNodes.mapIndexed { index, node ->
             val angle = index.toDouble() / maxOf(visibleNodes.size, 1) * Math.PI * 2 - Math.PI / 2
             node.logicalId to Offset((.5f + .32f * cos(angle)).toFloat(), (.5f + .32f * sin(angle)).toFloat())
-        }.toMap()
+        }
     }
-
     Box(modifier) {
         Canvas(Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val radius = minOf(size.width, size.height) * .35f
             for (i in 1..3) drawCircle(primary.copy(alpha = .04f + .01f * pulse), radius * i / 3f, center, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
-            positions.values.forEach { point ->
-                drawLine(secondary.copy(alpha = .28f), center, Offset(point.x * size.width, point.y * size.height), 1.5.dp.toPx(), StrokeCap.Round)
-            }
+            for (point in positions.map { it.second }) drawLine(secondary.copy(alpha = .28f), center, Offset(point.x * size.width, point.y * size.height), 1.5.dp.toPx(), StrokeCap.Round)
         }
-
         Surface(Modifier.align(Alignment.Center).size(82.dp), CircleShape, primary.copy(alpha = .14f), tonalElevation = 3.dp) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Text("●", color = primary, style = MaterialTheme.typography.titleLarge)
                 Text("YOU", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             }
         }
-
-        visibleNodes.forEachIndexed { index, node ->
+        for ((index, node) in visibleNodes.withIndex()) {
             val angle = index.toDouble() / maxOf(visibleNodes.size, 1) * Math.PI * 2 - Math.PI / 2
             val x = (.5f + .32f * cos(angle)).toFloat()
             val y = (.5f + .32f * sin(angle)).toFloat()
             val connected = node.status == NodeStatus.CONNECTED
             Surface(
-                Modifier.align(Alignment.TopStart).padding(start = (x * 300 - 30).dp, top = (y * 300 - 30).dp).size(60.dp),
+                Modifier.align(Alignment.TopStart).padding(start = (x * 300 - 30).dp, top = (y * 300 - 30).dp).size(60.dp).clickable { onSelectNode(node) },
                 CircleShape,
                 if (connected) secondary.copy(alpha = .15f) else surface,
                 tonalElevation = 2.dp,
-                onClick = { onSelectNode(node) },
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     Text("●", color = if (connected) secondary else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -198,7 +166,6 @@ private fun NetworkMap(nodes: List<Node>, selfId: String, selfName: String, onSe
                 }
             }
         }
-
         Surface(Modifier.align(Alignment.TopStart).padding(12.dp), CircleShape, MaterialTheme.colorScheme.surface.copy(alpha = .92f)) {
             Text("${nodes.size} devices", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall)
         }
