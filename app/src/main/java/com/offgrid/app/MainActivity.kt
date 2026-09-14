@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -45,11 +46,24 @@ class MainActivity : ComponentActivity() {
         if (hasRequiredPermissions()) startMeshService() else permissionLauncher.launch(requiredPermissions())
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (hasRequiredPermissions() && !isLocationModeEnabled()) {
+            Toast.makeText(
+                this,
+                "Turn Location ON — Android requires Location Mode for Wi-Fi Direct discovery.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
     private fun startMeshService() {
         startForegroundService(this, Intent(this, OffGridNetworkService::class.java))
     }
 
-    private fun hasRequiredPermissions(): Boolean = requiredPermissions().filter { it != Manifest.permission.POST_NOTIFICATIONS }.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+    private fun hasRequiredPermissions(): Boolean = requiredPermissions()
+        .filter { it != Manifest.permission.POST_NOTIFICATIONS }
+        .all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
 
     private fun requiredPermissions(): Array<String> = buildList {
         if (Build.VERSION.SDK_INT >= 33) {
@@ -57,4 +71,8 @@ class MainActivity : ComponentActivity() {
             add(Manifest.permission.POST_NOTIFICATIONS)
         } else add(Manifest.permission.ACCESS_FINE_LOCATION)
     }.toTypedArray()
+
+    private fun isLocationModeEnabled(): Boolean = runCatching {
+        Settings.Secure.getInt(contentResolver, Settings.Secure.LOCATION_MODE) != Settings.Secure.LOCATION_MODE_OFF
+    }.getOrDefault(false)
 }
