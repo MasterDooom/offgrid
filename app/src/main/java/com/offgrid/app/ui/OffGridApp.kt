@@ -2,7 +2,7 @@ package com.offgrid.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,21 +39,21 @@ sealed class Screen {
     data object Network : Screen()
 }
 
-private val OffGridColors = darkColorScheme(
-    primary = Color(0xFF6EA8FF),
-    onPrimary = Color(0xFF07111F),
-    primaryContainer = Color(0xFF172A45),
-    onPrimaryContainer = Color(0xFFDCEAFF),
-    secondary = Color(0xFFFF6B9A),
-    onSecondary = Color(0xFF24000E),
-    secondaryContainer = Color(0xFF401526),
-    onSecondaryContainer = Color(0xFFFFD9E4),
-    background = Color(0xFF080A10),
-    surface = Color(0xFF0E1118),
-    surfaceVariant = Color(0xFF171B24),
-    onSurface = Color(0xFFF5F7FA),
-    onSurfaceVariant = Color(0xFF9AA4B2),
-    error = Color(0xFFFF5C63),
+private val OffGridColors = lightColorScheme(
+    primary = Color(0xFF1769FF),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFE8F0FF),
+    onPrimaryContainer = Color(0xFF123A83),
+    secondary = Color(0xFF08A66A),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFDDF7EC),
+    onSecondaryContainer = Color(0xFF005B3A),
+    background = Color(0xFFF8FAFD),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFF0F3F7),
+    onSurface = Color(0xFF10213A),
+    onSurfaceVariant = Color(0xFF66758C),
+    error = Color(0xFFD92D3B),
     onError = Color.White,
 )
 
@@ -70,7 +70,7 @@ fun OffGridApp(
     val linkState by transport.linkState.collectAsState()
     val statusFlow = remember(transport) {
         (transport as? WifiDirectCommunicationTransport)?.transportStatus
-            ?: MutableStateFlow("Offline transport")
+            ?: MutableStateFlow("Listening for nearby OffGrid nodes…")
     }
     val transportStatus by statusFlow.collectAsState()
     val conversations by messaging.conversations.collectAsState()
@@ -86,13 +86,9 @@ fun OffGridApp(
 
     fun safeLaunch(block: suspend () -> Unit) {
         scope.launch {
-            try {
-                block()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Throwable) {
-                // UI actions must not crash the app.
-            }
+            try { block() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Throwable) { }
         }
     }
 
@@ -143,8 +139,7 @@ fun OffGridApp(
                     liveNode,
                     conversation?.messages ?: emptyList(),
                     identity.nodeId,
-                    canSend = !liveNode.isSimulated &&
-                        (liveNode.status == NodeStatus.CONNECTED || relayAvailable),
+                    canSend = !liveNode.isSimulated && (liveNode.status == NodeStatus.CONNECTED || relayAvailable),
                     onBack = { screen = Screen.Home },
                     onSend = { safeLaunch { messaging.send(liveNode, it) } },
                     transportStatus = transportStatus,
@@ -162,8 +157,7 @@ fun OffGridApp(
                 { emergency.cancel() },
             )
             Screen.DemoSetup -> DemoSetupScreen(
-                identity,
-                linkState,
+                identity, linkState,
                 { screen = Screen.Home },
                 { _, _, _ -> screen = Screen.Home },
                 { safeLaunch { transport.discoverDevices() } },
