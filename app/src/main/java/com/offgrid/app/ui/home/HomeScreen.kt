@@ -64,19 +64,13 @@ fun HomeScreen(
     onOpenNetwork: () -> Unit,
     onOpenMessages: () -> Unit,
 ) {
-    val recent = conversations.values
-        .filter { it.lastMessage != null }
-        .sortedByDescending { it.lastMessage!!.timestamp }
+    val recent = conversations.values.filter { it.lastMessage != null }.sortedByDescending { it.lastMessage!!.timestamp }
     val connected = nodes.count { it.status == NodeStatus.CONNECTED && !it.isSimulated }
     val maxHops = nodes.maxOfOrNull { it.hops } ?: 0
 
-    Scaffold(
-        bottomBar = {
-            OffGridBottomBar(selected = HomeTab.HOME, onHome = {}, onMessages = onOpenMessages, onNetwork = onOpenNetwork)
-        },
-    ) { padding ->
+    Scaffold(bottomBar = { OffGridBottomBar(HomeTab.HOME, {}, onOpenMessages, onOpenNetwork) }) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
+            Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
@@ -89,64 +83,31 @@ fun HomeScreen(
                     IconButton(onClick = onOpenSettings) { Text("⚙", style = MaterialTheme.typography.titleLarge) }
                 }
             }
-
             item { MeshStatusHeader(linkState, transportStatus, connected) }
-
-            item {
-                MeshTopology(nodes = nodes, onSelectNode = onSelectNode)
-            }
-
+            item { MeshTopology(nodes, onSelectNode) }
             if (nodes.isNotEmpty()) {
                 item {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         Metric("${nodes.size}", "devices")
                         Metric("$maxHops", "max hops")
                         Metric("AES-256", "hop encrypted")
                     }
                 }
             }
-
             item { EmergencySosCard(onEmergency) }
-
-            item {
-                SectionHeader("Nearby Devices", "See all", onOpenNetwork)
-            }
+            item { SectionHeader("Nearby Devices", "See all", onOpenNetwork) }
             if (nodes.isEmpty()) {
-                item {
-                    Text(
-                        "No OffGrid devices discovered yet. Scan nearby to find peers.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                item { EmptyText("No OffGrid devices discovered yet. Scan nearby to find peers.") }
             } else {
-                items(nodes.take(4), key = { "node:${it.logicalId}" }) { node ->
-                    NearbyDeviceRow(node, onSelectNode)
-                }
-                if (nodes.size > 4) {
-                    item { Text("${nodes.size - 4} more devices", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
-                }
+                items(nodes.take(4), key = { "node:${it.logicalId}" }) { NearbyDeviceRow(it, onSelectNode) }
+                if (nodes.size > 4) item { Text("${nodes.size - 4} more devices", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
             }
-
             item { SectionHeader("Recent Conversations", null, null) }
             if (recent.isEmpty()) {
-                item {
-                    Text(
-                        "Your conversations will appear here after your first offline message.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                item { EmptyText("Your conversations will appear here after your first offline message.") }
             } else {
-                items(recent.take(4), key = { "conversation:${it.id}" }) { conversation ->
-                    RecentConversationRow(conversation, onOpenConversation)
-                }
+                items(recent.take(4), key = { "conversation:${it.id}" }) { RecentConversationRow(it, onOpenConversation) }
             }
-
             item {
                 Spacer(Modifier.height(2.dp))
                 Text(
@@ -163,32 +124,24 @@ fun HomeScreen(
 }
 
 @Composable
+private fun EmptyText(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
 private fun MeshStatusHeader(linkState: LinkState, transportStatus: String, connected: Int) {
     val active = linkState != LinkState.OFFLINE
     val color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-    ) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(12.dp).background(color, CircleShape))
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(if (active) "MESH ACTIVE" else "MESH OFFLINE", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = color)
-                Text(
-                    if (active) "Local network operational" else "Start mesh mode to connect nearby peers",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(if (active) "Local network operational" else "Start mesh mode to connect nearby peers", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(if (connected > 0) "$connected linked" else "P2P mode", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                if (transportStatus.contains("internet", ignoreCase = true)) {
-                    Text("Internet available", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    Text("No tower required", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                Text(if (transportStatus.contains("internet", true)) "Internet available" else "No tower required", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -199,63 +152,40 @@ private fun MeshTopology(nodes: List<Node>, onSelectNode: (Node) -> Unit) {
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
     val surface = MaterialTheme.colorScheme.surface
-    val pulse by rememberInfiniteTransition(label = "mesh-pulse").animateFloat(
-        initialValue = .78f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "pulse",
-    )
-    val positions = remember(nodes.map { it.logicalId }) {
-        nodes.take(8).mapIndexed { index, node ->
-            val angle = index.toDouble() / maxOf(nodes.take(8).size, 1) * Math.PI * 2 - Math.PI / 2
-            node.logicalId to Offset(
-                (.5f + .32f * cos(angle)).toFloat(),
-                (.5f + .32f * sin(angle)).toFloat(),
-            )
-        }.toMap()
+    val visibleNodes = nodes.take(8)
+    val pulse by rememberInfiniteTransition(label = "mesh-pulse").animateFloat(.78f, 1f, infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse")
+    val positions = remember(visibleNodes.map { it.logicalId }) {
+        visibleNodes.mapIndexed { index, node ->
+            val angle = index.toDouble() / maxOf(visibleNodes.size, 1) * Math.PI * 2 - Math.PI / 2
+            node.logicalId to Offset((.5f + .32f * cos(angle)).toFloat(), (.5f + .32f * sin(angle)).toFloat())
+        }
     }
 
     Box(Modifier.fillMaxWidth().height(300.dp)) {
         Canvas(Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val radius = minOf(size.width, size.height) * .34f
-            for (i in 1..3) {
-                drawCircle(primary.copy(alpha = .035f + .01f * pulse), radius * i / 3f, center, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
-            }
-            positions.values.forEach { point ->
-                drawLine(
-                    secondary.copy(alpha = .25f),
-                    center,
-                    Offset(point.x * size.width, point.y * size.height),
-                    strokeWidth = 1.5.dp.toPx(),
-                    cap = StrokeCap.Round,
-                )
+            for (i in 1..3) drawCircle(primary.copy(alpha = .035f + .01f * pulse), radius * i / 3f, center, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
+            for (point in positions.map { it.second }) {
+                drawLine(secondary.copy(alpha = .25f), center, Offset(point.x * size.width, point.y * size.height), 1.5.dp.toPx(), StrokeCap.Round)
             }
         }
-
-        Surface(
-            modifier = Modifier.align(Alignment.Center).size(78.dp),
-            shape = CircleShape,
-            color = primary.copy(alpha = .12f),
-            tonalElevation = 2.dp,
-        ) {
+        Surface(Modifier.align(Alignment.Center).size(78.dp), CircleShape, primary.copy(alpha = .12f), tonalElevation = 2.dp) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Text("●", color = primary, style = MaterialTheme.typography.titleLarge)
                 Text("YOU", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             }
         }
-
-        nodes.take(8).forEachIndexed { index, node ->
-            val angle = index.toDouble() / maxOf(nodes.take(8).size, 1) * Math.PI * 2 - Math.PI / 2
+        for ((index, node) in visibleNodes.withIndex()) {
+            val angle = index.toDouble() / maxOf(visibleNodes.size, 1) * Math.PI * 2 - Math.PI / 2
             val x = (.5f + .32f * cos(angle)).toFloat()
             val y = (.5f + .32f * sin(angle)).toFloat()
             val connected = node.status == NodeStatus.CONNECTED
             Surface(
-                modifier = Modifier.align(Alignment.TopStart).padding(start = (x * 280 - 31).dp, top = (y * 300 - 31).dp).size(62.dp),
-                shape = CircleShape,
-                color = if (connected) secondary.copy(alpha = .12f) else surface,
+                Modifier.align(Alignment.TopStart).padding(start = (x * 280 - 31).dp, top = (y * 300 - 31).dp).size(62.dp).clickable { onSelectNode(node) },
+                CircleShape,
+                if (connected) secondary.copy(alpha = .12f) else surface,
                 tonalElevation = 2.dp,
-                onClick = { onSelectNode(node) },
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     Text("●", color = if (connected) secondary else MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleMedium)
@@ -277,11 +207,7 @@ private fun Metric(value: String, label: String) {
 
 @Composable
 private fun EmergencySosCard(onClick: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.error.copy(alpha = .09f),
-    ) {
+    Surface(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.error.copy(alpha = .09f)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(Modifier.size(42.dp), CircleShape, color = MaterialTheme.colorScheme.error.copy(alpha = .12f)) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("!", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) }
@@ -299,18 +225,13 @@ private fun EmergencySosCard(onClick: () -> Unit) {
 private fun SectionHeader(title: String, action: String?, onAction: (() -> Unit)?) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        if (action != null && onAction != null) {
-            Text(action, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable(onClick = onAction))
-        }
+        if (action != null && onAction != null) Text(action, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable(onClick = onAction))
     }
 }
 
 @Composable
 private fun NearbyDeviceRow(node: Node, onSelectNode: (Node) -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable { onSelectNode(node) },
-        color = MaterialTheme.colorScheme.surface,
-    ) {
+    Surface(Modifier.fillMaxWidth().clickable { onSelectNode(node) }, color = MaterialTheme.colorScheme.surface) {
         Row(Modifier.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             StatusDot(node.status)
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
@@ -338,9 +259,7 @@ private fun RecentConversationRow(conversation: Conversation, onOpen: (Node) -> 
     Surface(Modifier.fillMaxWidth().clickable { onOpen(peer) }, color = MaterialTheme.colorScheme.surface) {
         Row(Modifier.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(Modifier.size(44.dp), CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = .10f)) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(peer.name.take(1).uppercase(), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                }
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(peer.name.take(1).uppercase(), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
             }
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(peer.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
@@ -366,8 +285,8 @@ enum class HomeTab { HOME, MESSAGES, NETWORK }
 @Composable
 private fun OffGridBottomBar(selected: HomeTab, onHome: () -> Unit, onMessages: () -> Unit, onNetwork: () -> Unit) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-        NavigationBarItem(selected == HomeTab.HOME, onClick = onHome, icon = { Text("⌂") }, label = { Text("Home") })
-        NavigationBarItem(selected == HomeTab.MESSAGES, onClick = onMessages, icon = { Text("□") }, label = { Text("Messages") })
-        NavigationBarItem(selected == HomeTab.NETWORK, onClick = onNetwork, icon = { Text("⌘") }, label = { Text("Network") })
+        NavigationBarItem(selected = selected == HomeTab.HOME, onClick = onHome, icon = { Text("⌂") }, label = { Text("Home") })
+        NavigationBarItem(selected = selected == HomeTab.MESSAGES, onClick = onMessages, icon = { Text("□") }, label = { Text("Messages") })
+        NavigationBarItem(selected = selected == HomeTab.NETWORK, onClick = onNetwork, icon = { Text("⌘") }, label = { Text("Network") })
     }
 }
