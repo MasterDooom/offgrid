@@ -1,17 +1,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Nearby Connections / offline peer-to-peer transport -->
+    <!-- Native Wi-Fi P2P transport -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Wi-Fi P2P discovery uses location permission through Android 12L. -->
+    <uses-permission android:maxSdkVersion="32" android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Android 13+ uses the Nearby devices permission for Wi-Fi P2P. -->
+    <uses-permission android:minSdkVersion="33" android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
+
+    <!-- Retained for the existing Nearby/Bluetooth transport layer. -->
     <uses-permission android:maxSdkVersion="30" android:name="android.permission.BLUETOOTH" />
     <uses-permission android:maxSdkVersion="30" android:name="android.permission.BLUETOOTH_ADMIN" />
-    <!-- Wi-Fi P2P discovery requires location permission on Android 12 and below. -->
-    <uses-permission android:maxSdkVersion="32" android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:minSdkVersion="31" android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:minSdkVersion="31" android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:minSdkVersion="31" android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
-    <uses-permission android:minSdkVersion="32" android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
-    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Required for the long-running user-visible mesh service. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
