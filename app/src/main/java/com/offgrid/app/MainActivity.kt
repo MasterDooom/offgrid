@@ -13,13 +13,13 @@ import androidx.lifecycle.lifecycleScope
 import com.offgrid.app.data.repository.EmergencyRepository
 import com.offgrid.app.data.repository.IdentityManager
 import com.offgrid.app.data.repository.MessagingRepository
-import com.offgrid.app.data.transport.MockCommunicationTransport
+import com.offgrid.app.data.transport.CommunicationTransport
+import com.offgrid.app.data.transport.WifiDirectCommunicationTransport
 import com.offgrid.app.ui.OffGridApp
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var identity: IdentityManager
-    private lateinit var transport: MockCommunicationTransport
+    private lateinit var transport: CommunicationTransport
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
         } else {
             Toast.makeText(
                 this,
-                "Nearby permission is required for offline device discovery.",
+                "Nearby device permission is required for offline discovery.",
                 Toast.LENGTH_LONG,
             ).show()
         }
@@ -39,11 +39,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         identity = IdentityManager(applicationContext)
-        transport = MockCommunicationTransport(applicationContext)
+        // Wi-Fi Direct is now the active physical transport for the app.
+        // Messaging, SOS, routing and hop encryption remain transport-agnostic.
+        transport = WifiDirectCommunicationTransport(applicationContext, lifecycleScope)
 
         setContent {
-            // Keep repository collection on the Activity lifecycle rather than a composable
-            // scope. Messaging must continue receiving packets while screens change.
             val messaging = androidx.compose.runtime.remember {
                 MessagingRepository(transport, identity.nodeId, lifecycleScope)
             }
@@ -65,7 +65,15 @@ class MainActivity : ComponentActivity() {
 
     private fun startTransport() {
         lifecycleScope.launch {
-            transport.start(identity.nodeId, identity.displayName)
+            runCatching {
+                transport.start(identity.nodeId, identity.displayName)
+            }.onFailure {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Wi-Fi Direct could not start: ${it.message ?: "unknown error"}",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
     }
 
@@ -75,11 +83,6 @@ class MainActivity : ComponentActivity() {
         }
 
     private fun requiredPermissions(): Array<String> = buildList {
-        if (Build.VERSION.SDK_INT >= 31) {
-            add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            add(Manifest.permission.BLUETOOTH_CONNECT)
-            add(Manifest.permission.BLUETOOTH_SCAN)
-        }
         if (Build.VERSION.SDK_INT >= 33) {
             add(Manifest.permission.NEARBY_WIFI_DEVICES)
         } else if (Build.VERSION.SDK_INT >= 29) {
