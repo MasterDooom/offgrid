@@ -12,7 +12,6 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.offgrid.app.MainActivity
-import com.offgrid.app.R
 import com.offgrid.app.data.model.Message
 import com.offgrid.app.data.model.MessageType
 import com.offgrid.app.data.runtime.OffGridRuntime
@@ -25,6 +24,7 @@ import kotlinx.coroutines.launch
 /** Keeps the local OffGrid mesh alive while the UI is backgrounded or the screen is locked. */
 class OffGridNetworkService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var explicitStop = false
 
     override fun onCreate() {
         super.onCreate()
@@ -50,6 +50,7 @@ class OffGridNetworkService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            explicitStop = true
             stopSelf()
             return START_NOT_STICKY
         }
@@ -62,11 +63,16 @@ class OffGridNetworkService : Service() {
             }
         }
 
+        // Keep the mesh service eligible for restart if Android reclaims the process/service.
         return START_STICKY
     }
 
     override fun onDestroy() {
-        runCatching { OffGridRuntime.transport.stop() }
+        // Do not tear down the process-wide transport merely because Android recreated/destroyed
+        // the service instance. The explicit stop action is the only intentional shutdown path.
+        if (explicitStop) {
+            runCatching { OffGridRuntime.transport.stop() }
+        }
         serviceScope.cancel()
         super.onDestroy()
     }
