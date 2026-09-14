@@ -6,9 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.offgrid.app.MainActivity
 import com.offgrid.app.R
 import com.offgrid.app.data.model.Message
@@ -27,7 +29,16 @@ class OffGridNetworkService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
-        startForeground(NOTIFICATION_ID, buildServiceNotification())
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildServiceNotification(),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            } else {
+                0
+            },
+        )
 
         OffGridRuntime.initialize(applicationContext)
         serviceScope.launch {
