@@ -95,10 +95,9 @@ fun OffGridApp(
     fun openChat(node: Node) {
         val liveNode = nodes.find { it.id == node.id } ?: node
         screen = Screen.Chat(liveNode)
-        val relayAvailable = nodes.any {
-            it.status == NodeStatus.CONNECTED && !it.isSimulated && it.id != liveNode.id
-        }
-        if (liveNode.status != NodeStatus.CONNECTED && !relayAvailable) {
+        // The transport now owns connection establishment. Do not require the UI to wait for
+        // CONNECTED before the user can compose/send a message.
+        if (liveNode.status != NodeStatus.CONNECTED && !liveNode.isSimulated) {
             safeLaunch { transport.connectToDevice(liveNode) }
         }
     }
@@ -132,14 +131,11 @@ fun OffGridApp(
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.id == current.node.id } ?: current.node
                 val conversation = conversations[liveNode.logicalId]
-                val relayAvailable = nodes.any {
-                    it.status == NodeStatus.CONNECTED && !it.isSimulated && it.id != liveNode.id
-                }
                 ChatScreen(
                     liveNode,
                     conversation?.messages ?: emptyList(),
                     identity.nodeId,
-                    canSend = !liveNode.isSimulated && (liveNode.status == NodeStatus.CONNECTED || relayAvailable),
+                    canSend = !liveNode.isSimulated,
                     onBack = { screen = Screen.Home },
                     onSend = { safeLaunch { messaging.send(liveNode, it) } },
                     transportStatus = transportStatus,
