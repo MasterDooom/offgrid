@@ -11,13 +11,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
-import com.offgrid.app.data.model.LinkState
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.model.NodeStatus
 import com.offgrid.app.data.repository.EmergencyRepository
 import com.offgrid.app.data.repository.IdentityManager
 import com.offgrid.app.data.repository.MessagingRepository
-import com.offgrid.app.data.transport.MockCommunicationTransport
+import com.offgrid.app.data.transport.CommunicationTransport
 import com.offgrid.app.ui.chat.ChatScreen
 import com.offgrid.app.ui.emergency.EmergencyScreen
 import com.offgrid.app.ui.home.HomeScreen
@@ -48,7 +47,7 @@ private val OffGridColors = lightColorScheme(
 @Composable
 fun OffGridApp(
     identity: IdentityManager,
-    transport: MockCommunicationTransport,
+    transport: CommunicationTransport,
     messaging: MessagingRepository,
     emergency: EmergencyRepository,
 ) {
@@ -69,13 +68,8 @@ fun OffGridApp(
     }
 
     fun openChat(node: Node) {
-        // Recent conversations are keyed by stable logical ID, while live discovery nodes
-        // carry a Nearby endpoint ID in node.id. Always resolve back to the live node first.
         val liveNode = nodes.find { it.logicalId == node.logicalId } ?: node
         screen = Screen.Chat(liveNode)
-
-        // If another real node is already connected, let the mesh router use it as a relay
-        // instead of immediately forcing a direct connection to the destination.
         val relayAvailable = nodes.any {
             it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId
         }
@@ -101,7 +95,6 @@ fun OffGridApp(
             }
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node
-                // IMPORTANT: conversations are keyed by stable logical ID, not Nearby endpoint ID.
                 val conversation = conversations[liveNode.logicalId]
                 val relayAvailable = nodes.any {
                     it.status == NodeStatus.CONNECTED && !it.isSimulated && it.logicalId != liveNode.logicalId
