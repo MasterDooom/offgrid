@@ -710,7 +710,7 @@ class WifiDirectCommunicationTransport(
     }
 
     private suspend fun writePacket(peer: PeerConnection, packet: HopPacket): Result<Unit> =
-        writeLine(peer, packet.toJson().toString(Charsets.UTF_8), countPacket = true)
+        writeLine(peer, String(packet.toJson(), Charsets.UTF_8), countPacket = true)
 
     private suspend fun writeLine(
         peer: PeerConnection,
