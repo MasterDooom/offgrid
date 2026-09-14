@@ -50,19 +50,12 @@ private val OffGridColors = lightColorScheme(
 )
 
 @Composable
-fun OffGridApp(
-    identity: IdentityManager,
-    transport: CommunicationTransport,
-    messaging: MessagingRepository,
-    emergency: EmergencyRepository,
-) {
+fun OffGridApp(identity: IdentityManager, transport: CommunicationTransport, messaging: MessagingRepository, emergency: EmergencyRepository) {
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
     val scope = rememberCoroutineScope()
     val nodes by transport.discoveredNodes.collectAsState()
     val linkState by transport.linkState.collectAsState()
-    val statusFlow = remember(transport) {
-        (transport as? WifiDirectCommunicationTransport)?.transportStatus ?: MutableStateFlow("Offline transport")
-    }
+    val statusFlow = remember(transport) { (transport as? WifiDirectCommunicationTransport)?.transportStatus ?: MutableStateFlow("Offline transport") }
     val transportStatus by statusFlow.collectAsState()
     val conversations by messaging.conversations.collectAsState()
     val sos by emergency.sos.collectAsState()
@@ -74,13 +67,7 @@ fun OffGridApp(
             Screen.Home -> Screen.Home
         }
     }
-
-    fun safeLaunch(block: suspend () -> Unit) {
-        scope.launch {
-            try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { }
-        }
-    }
-
+    fun safeLaunch(block: suspend () -> Unit) { scope.launch { try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { } } }
     fun openChat(node: Node) {
         val liveNode = nodes.find { it.logicalId == node.logicalId } ?: node
         screen = Screen.Chat(liveNode)
@@ -92,14 +79,10 @@ fun OffGridApp(
         when (val current = screen) {
             Screen.Home -> HomeScreen(identity, nodes, linkState, transportStatus, conversations,
                 onSelectNode = { screen = Screen.Profile(it) }, onOpenConversation = { openChat(it) },
-                onDiscover = { safeLaunch { transport.discoverDevices() } },
-                onEmergency = { screen = Screen.Emergency }, onOpenSettings = { screen = Screen.DemoSetup },
-                onOpenNetwork = { screen = Screen.Network }, onOpenMessages = { screen = Screen.Messages })
+                onDiscover = { safeLaunch { transport.discoverDevices() } }, onEmergency = { screen = Screen.Emergency },
+                onOpenSettings = { screen = Screen.DemoSetup }, onOpenNetwork = { screen = Screen.Network }, onOpenMessages = { screen = Screen.Messages })
             Screen.Messages -> MessagesScreen(conversations, { openChat(it) }, { screen = Screen.Home }, { screen = Screen.Network })
-            is Screen.Profile -> {
-                val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node
-                ProfileScreen(liveNode, { screen = Screen.Home }, { openChat(liveNode) })
-            }
+            is Screen.Profile -> { val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node; ProfileScreen(liveNode, { screen = Screen.Home }, { openChat(liveNode) }) }
             is Screen.Chat -> {
                 val liveNode = nodes.find { it.logicalId == current.node.logicalId } ?: current.node
                 val conversation = conversations[liveNode.logicalId]
@@ -108,16 +91,9 @@ fun OffGridApp(
                     canSend = !liveNode.isSimulated && (liveNode.status == NodeStatus.CONNECTED || relayAvailable),
                     onBack = { screen = Screen.Home }, onSend = { safeLaunch { messaging.send(liveNode, it) } }, transportStatus = transportStatus)
             }
-            Screen.Network -> NetworkScreen(nodes, identity.nodeId, identity.displayName, { screen = Screen.Home },
-                { screen = Screen.Profile(it) }, transportStatus, { screen = Screen.Home }, { screen = Screen.Messages })
-            Screen.Emergency -> EmergencyScreen(nodes, sos, { screen = Screen.Home },
-                { safeLaunch { emergency.activate(scope, it) } }, { emergency.cancel() })
-            Screen.DemoSetup -> DemoSetupScreen(identity, linkState, { screen = Screen.Home },
-                { _, _, _ -> screen = Screen.Home }, { safeLaunch { transport.discoverDevices() } },
-                { newName ->
-                    identity.displayName = newName
-                    (transport as? WifiDirectCommunicationTransport)?.updateDisplayName(newName)
-                })
+            Screen.Network -> NetworkScreen(nodes, identity.nodeId, identity.displayName, { screen = Screen.Home }, { screen = Screen.Profile(it) }, transportStatus, { screen = Screen.Home }, { screen = Screen.Messages })
+            Screen.Emergency -> EmergencyScreen(nodes, sos, { screen = Screen.Home }, { safeLaunch { emergency.activate(scope, it) } }, { emergency.cancel() })
+            Screen.DemoSetup -> DemoSetupScreen(identity, linkState, { screen = Screen.Home }, { _, _, _ -> screen = Screen.Home }, { safeLaunch { transport.discoverDevices() } }, { newName -> identity.displayName = newName })
         }
     }
 }
