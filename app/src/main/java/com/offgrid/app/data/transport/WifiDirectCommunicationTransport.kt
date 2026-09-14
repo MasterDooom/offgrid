@@ -267,8 +267,13 @@ class WifiDirectCommunicationTransport(
                     if (reason == WifiP2pManager.BUSY) {
                         _status.value = "Wi-Fi P2P busy • stopping stale discovery and retrying"
                         p2p.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
-                            override fun onSuccess() = result.complete(false)
-                            override fun onFailure(_) = result.complete(false)
+                            override fun onSuccess() {
+                                result.complete(false)
+                            }
+
+                            override fun onFailure(reason: Int) {
+                                result.complete(false)
+                            }
                         })
                     } else {
                         recordDiscovery("FAILED: $reasonText")
