@@ -22,7 +22,10 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        val nearbyGranted = result.filterKeys { it != Manifest.permission.POST_NOTIFICATIONS }.values.all { it }
+        val nearbyGranted = result
+            .filterKeys { it != Manifest.permission.POST_NOTIFICATIONS }
+            .values
+            .all { it }
         if (nearbyGranted) {
             startMeshService()
         } else {
@@ -54,8 +57,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startMeshService() {
-        // This is intentionally started while the Activity is visible. Android restricts starting
-        // foreground services from the background on newer releases.
+        // Start while the Activity is visible; newer Android versions restrict background FGS starts.
         startForegroundService(
             this,
             Intent(this, OffGridNetworkService::class.java),
@@ -71,7 +73,8 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) {
             add(Manifest.permission.NEARBY_WIFI_DEVICES)
             add(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (Build.VERSION.SDK_INT >= 29) {
+        } else {
+            // Wi-Fi P2P discovery/connect uses ACCESS_FINE_LOCATION on Android 12L and below.
             add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }.toTypedArray()
