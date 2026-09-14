@@ -17,6 +17,7 @@ import com.offgrid.app.data.repository.EmergencyRepository
 import com.offgrid.app.data.repository.IdentityManager
 import com.offgrid.app.data.repository.MessagingRepository
 import com.offgrid.app.data.transport.CommunicationTransport
+import com.offgrid.app.data.transport.MockCommunicationTransport
 import com.offgrid.app.data.transport.WifiDirectCommunicationTransport
 import com.offgrid.app.ui.chat.ChatScreen
 import com.offgrid.app.ui.emergency.EmergencyScreen
@@ -55,7 +56,13 @@ fun OffGridApp(identity: IdentityManager, transport: CommunicationTransport, mes
     val scope = rememberCoroutineScope()
     val nodes by transport.discoveredNodes.collectAsState()
     val linkState by transport.linkState.collectAsState()
-    val statusFlow = remember(transport) { (transport as? WifiDirectCommunicationTransport)?.transportStatus ?: MutableStateFlow("Offline transport") }
+    val statusFlow = remember(transport) {
+        when (transport) {
+            is WifiDirectCommunicationTransport -> transport.transportStatus
+            is MockCommunicationTransport -> transport.transportStatus
+            else -> MutableStateFlow("Transport active")
+        }
+    }
     val transportStatus by statusFlow.collectAsState()
     val conversations by messaging.conversations.collectAsState()
     val sos by emergency.sos.collectAsState()
