@@ -1,8 +1,6 @@
 # OFFGRID — MVP prototype
 
-Offline-first messaging with a nearby-device discovery layer and an Emergency SOS layer,
-inspired architecturally by [Meshtastic's Android app](https://meshtastic.org/docs/software/android/)
-but not a clone of it.
+Offline-first messaging with a nearby-device discovery layer and an Emergency SOS layer.
 
 Flow: **Discover -> Select device -> Chat -> Send/Receive -> Emergency SOS**.
 
