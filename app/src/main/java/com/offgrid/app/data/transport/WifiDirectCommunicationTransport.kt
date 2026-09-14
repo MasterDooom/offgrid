@@ -454,7 +454,7 @@ class WifiDirectCommunicationTransport(
         writer.flush()
     }
 
-    private fun handleLine(socketKey: String, line: String) {
+    private suspend fun handleLine(socketKey: String, line: String) {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return
         when (json.optString("kind")) {
             "OFFGRID_HELLO" -> handleHello(socketKey, json)
@@ -536,7 +536,7 @@ class WifiDirectCommunicationTransport(
         scope.launch { writeLine(peer, control.toString()) }
     }
 
-    private fun handleHopPacket(socketKey: String, bytes: ByteArray) {
+    private suspend fun handleHopPacket(socketKey: String, bytes: ByteArray) {
         val packet = HopPacket.fromJson(bytes) ?: return
         if (seenPackets.contains(packet.messageId) || !processingPackets.add(packet.messageId)) return
 
