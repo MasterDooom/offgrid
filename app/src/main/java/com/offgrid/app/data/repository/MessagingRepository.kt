@@ -8,6 +8,7 @@ import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.transport.CommunicationTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,10 +46,7 @@ class MessagingRepository(
     }
 
     fun conversationWith(node: Node): Conversation =
-        _conversations.value[node.logicalId] ?: Conversation(
-            id = node.logicalId,
-            peer = node,
-        )
+        _conversations.value[node.logicalId] ?: Conversation(id = node.logicalId, peer = node)
 
     suspend fun send(node: Node, text: String) {
         val cleanText = text.trim()
@@ -63,36 +61,10 @@ class MessagingRepository(
                 content = cleanText,
                 recipientNodeId = node.logicalId,
             )
+            try { append(conversationId, outgoing) } catch (_: Throwable) { return@withLock }
 
-            try {
-                append(conversationId, outgoing)
-            } catch (_: Throwable) {
-                return@withLock
-            }
-
-            // A discovered peer can be visible before the TCP data channel/handshake is ready.
-            // First try the existing route, then establish the physical link and retry once.
-            val firstAttempt = runCatching { transport.sendMessage(outgoing) }
-                .getOrElse { Result.failure(it) }
-
-            val result = if (firstAttempt.isSuccess) {
-                firstAttempt
-            } else {
-                val connection = runCatching { transport.connectToDevice(node) }
-                    .getOrElse { Result.failure(it) }
-                if (connection.isSuccess) {
-                    runCatching { transport.sendMessage(outgoing) }
-                        .getOrElse { Result.failure(it) }
-                } else {
-                    firstAttempt
-                }
-            }
-
-            replaceStatus(
-                conversationId,
-                outgoing.id,
-                if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
-            )
+            val result = deliverWithRecovery(node, outgoing)
+            replaceStatus(conversationId, outgoing.id, if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED)
         }
     }
 
@@ -106,61 +78,46 @@ class MessagingRepository(
             type = MessageType.EMERGENCY,
             recipientNodeId = node.logicalId,
         )
-        try {
-            append(conversationId, outgoing)
-        } catch (error: Throwable) {
-            return@withLock Result.failure(error)
-        }
-
-        val firstAttempt = runCatching { transport.sendMessage(outgoing) }
-            .getOrElse { Result.failure(it) }
-        val result = if (firstAttempt.isSuccess) firstAttempt else {
-            val connection = runCatching { transport.connectToDevice(node) }
-                .getOrElse { Result.failure(it) }
-            if (connection.isSuccess) {
-                runCatching { transport.sendMessage(outgoing) }
-                    .getOrElse { Result.failure(it) }
-            } else firstAttempt
-        }
-
-        replaceStatus(
-            conversationId,
-            outgoing.id,
-            if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED,
-        )
+        try { append(conversationId, outgoing) } catch (error: Throwable) { return@withLock Result.failure(error) }
+        val result = deliverWithRecovery(node, outgoing)
+        replaceStatus(conversationId, outgoing.id, if (result.isSuccess) MessageStatus.DELIVERED else MessageStatus.FAILED)
         result
     }
 
-    private fun canonicalConversationId(message: Message): String =
-        if (message.senderId == selfId) {
-            message.recipientNodeId ?: message.receiverId
-        } else {
-            message.senderId
+    private suspend fun deliverWithRecovery(node: Node, message: Message): Result<Unit> {
+        var last = runCatching { transport.sendMessage(message) }.getOrElse { Result.failure(it) }
+        if (last.isSuccess) return last
+
+        // The peer can be discovered before its socket/HELLO mapping is ready. Give the transport
+        // a chance to establish the P2P data channel, then retry more than once to absorb the
+        // normal Android P2P group/handshake race.
+        repeat(2) { attempt ->
+            runCatching { transport.connectToDevice(node) }.onFailure { last = Result.failure(it) }
+            if (last.isSuccess) return@repeat
+            delay(350L * (attempt + 1))
+            last = runCatching { transport.sendMessage(message) }.getOrElse { Result.failure(it) }
+            if (last.isSuccess) return last
         }
+        return last
+    }
+
+    private fun canonicalConversationId(message: Message): String =
+        if (message.senderId == selfId) message.recipientNodeId ?: message.receiverId else message.senderId
 
     private fun append(conversationId: String, message: Message) {
         if (conversationId.isBlank()) return
         val current = _conversations.value
-        val existing = current[conversationId]
-            ?: Conversation(
-                id = conversationId,
-                peer = Node(
-                    id = message.senderId,
-                    name = message.senderId,
-                    logicalId = conversationId,
-                ),
-            )
+        val existing = current[conversationId] ?: Conversation(
+            id = conversationId,
+            peer = Node(id = message.senderId, name = message.senderId, logicalId = conversationId),
+        )
         if (existing.messages.any { it.id == message.id }) return
-        _conversations.value = current +
-            (conversationId to existing.copy(messages = existing.messages + message))
+        _conversations.value = current + (conversationId to existing.copy(messages = existing.messages + message))
     }
 
     private fun replaceStatus(conversationId: String, messageId: String, status: MessageStatus) {
         val existing = _conversations.value[conversationId] ?: return
-        val updated = existing.messages.map {
-            if (it.id == messageId) it.copy(status = status) else it
-        }
         _conversations.value = _conversations.value +
-            (conversationId to existing.copy(messages = updated))
+            (conversationId to existing.copy(messages = existing.messages.map { if (it.id == messageId) it.copy(status = status) else it }))
     }
 }
