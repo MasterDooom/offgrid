@@ -68,7 +68,7 @@ class OffGridNetworkService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("OffGrid mesh active")
             .setContentText("Discovering nearby devices and relaying messages")
             .setOngoing(true)
