@@ -25,7 +25,9 @@ import com.offgrid.app.data.security.HopPacket
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -34,6 +36,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -48,14 +51,11 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Native Android Wi-Fi P2P transport for OFFGRID.
  *
- * This class is deliberately separate from the existing Nearby transport and is NOT wired into
- * the current MainActivity. The existing APK therefore keeps its current transport unchanged.
+ * Wi-Fi P2P is the physical link. HopRouter decides the logical next hop and HopEncryption protects
+ * every message hop. The transport keeps the Wi-Fi device address, logical OffGrid ID and socket
+ * together so discovery, connection and messaging cannot drift into different peer identities.
  *
- * Wi-Fi P2P is the physical link. HopRouter still decides the logical next hop and HopEncryption
- * still protects every hop with the existing AES-GCM implementation.
- *
- * Direct range is hardware/environment dependent. Diagnostics are exposed so real phones can be
- * measured instead of assigning an unsupported fixed range claim.
+ * Direct range is hardware/environment dependent; this class deliberately makes no fixed range claim.
  */
 class WifiDirectCommunicationTransport(
     private val context: Context,
@@ -67,6 +67,9 @@ class WifiDirectCommunicationTransport(
         private const val CONNECT_TIMEOUT_MS = 8_000
         private const val MAX_PACKET_BYTES = 16 * 1024
         private const val HELLO = "OFFGRID_WIFI_P2P_V1"
+        private const val ROUTE_ANNOUNCEMENT = "OFFGRID_ROUTES_V1"
+        private const val DISCOVERY_RETRY_MS = 4_000L
+        private const val DISCOVERY_REFRESH_MS = 12_000L
     }
 
     data class Diagnostics(
@@ -81,6 +84,15 @@ class WifiDirectCommunicationTransport(
             get() = if (packetsSent == 0L) 0.0
             else (packetsSent - packetsFailed).coerceAtLeast(0).toDouble() / packetsSent * 100.0
     }
+
+    private data class PeerConnection(
+        val socketKey: String,
+        val deviceAddress: String?,
+        val logicalId: String,
+        val name: String,
+        val socket: Socket,
+        val writer: BufferedWriter,
+    )
 
     private val manager = context.applicationContext
         .getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
@@ -102,18 +114,21 @@ class WifiDirectCommunicationTransport(
     val transportStatus = _status.asStateFlow()
 
     private val router = HopRouter()
-    private val writers = ConcurrentHashMap<String, BufferedWriter>()
-    private val sockets = ConcurrentHashMap<String, Socket>()
-    private val peerIds = ConcurrentHashMap<String, String>()
-    private val logicalToSocket = ConcurrentHashMap<String, String>()
+    private val peersBySocket = ConcurrentHashMap<String, PeerConnection>()
+    private val socketByLogicalId = ConcurrentHashMap<String, String>()
+    private val socketByDeviceAddress = ConcurrentHashMap<String, String>()
+    private val writerLocks = ConcurrentHashMap<String, Mutex>()
     private val seenPackets = ConcurrentHashMap.newKeySet<String>()
+    private val processingPackets = ConcurrentHashMap.newKeySet<String>()
     private val waiters = ConcurrentHashMap<String, CompletableDeferred<Result<Unit>>>()
-    private val sendMutex = Mutex()
 
+    private val stateMutex = Mutex()
     private var selfId = ""
     private var selfName = ""
     private var server: ServerSocket? = null
     private var registered = false
+    private var discoveryJob: Job? = null
+    private var pendingConnectionAddress: String? = null
 
     private val peersListener = WifiP2pManager.PeerListListener { list: WifiP2pDeviceList ->
         publishPeers(list.deviceList)
@@ -122,14 +137,16 @@ class WifiDirectCommunicationTransport(
     private val connectionInfoListener = WifiP2pManager.ConnectionInfoListener { info: WifiP2pInfo ->
         if (!info.groupFormed) {
             _linkState.value = LinkState.OFFLINE
+            _status.value = "Wi-Fi P2P group not formed"
             return@ConnectionInfoListener
         }
         _linkState.value = LinkState.CONNECTED
         if (info.isGroupOwner) {
             _status.value = "Wi-Fi P2P group owner • relay ready"
             startServer()
+            announceRoutesToPeers()
         } else {
-            _status.value = "Wi-Fi P2P connected"
+            _status.value = "Wi-Fi P2P connected • opening data channel"
             info.groupOwnerAddress?.let { connectToOwner(it.hostAddress) }
         }
     }
@@ -142,8 +159,13 @@ class WifiDirectCommunicationTransport(
                         WifiP2pManager.EXTRA_WIFI_STATE,
                         WifiP2pManager.WIFI_P2P_STATE_DISABLED,
                     ) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                    if (!enabled) _linkState.value = LinkState.OFFLINE
-                    _status.value = if (enabled) "Wi-Fi P2P enabled" else "Wi-Fi P2P disabled"
+                    if (!enabled) {
+                        _linkState.value = LinkState.OFFLINE
+                        _status.value = "Wi-Fi P2P disabled"
+                    } else {
+                        _status.value = "Wi-Fi P2P enabled"
+                        startDiscoveryLoop()
+                    }
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> requestConnectionInfo()
@@ -159,24 +181,44 @@ class WifiDirectCommunicationTransport(
         if (registered) return
         registerReceiver()
         requestPeers()
-        discover()
+        startDiscoveryLoop()
     }
 
     override suspend fun discoverDevices() {
         requirePermission()
         requestPeers()
-        discover()
+        discoverOnce()
+        startDiscoveryLoop()
     }
 
-    private fun discover() {
-        val p2p = manager ?: return
-        val ch = channel ?: return
+    private fun startDiscoveryLoop() {
+        if (discoveryJob?.isActive == true) return
+        discoveryJob = scope.launch {
+            var delayMs = 0L
+            while (registered) {
+                if (delayMs > 0) delay(delayMs)
+                val success = discoverOnce()
+                delayMs = if (success) DISCOVERY_REFRESH_MS else DISCOVERY_RETRY_MS
+            }
+        }
+    }
+
+    private suspend fun discoverOnce(): Boolean = withContext(Dispatchers.IO) {
+        val p2p = manager ?: return@withContext false
+        val ch = channel ?: return@withContext false
+        if (!hasPermission()) return@withContext false
+        val result = CompletableDeferred<Boolean>()
         p2p.discoverPeers(ch, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() { _status.value = "Scanning for Wi-Fi P2P peers…" }
+            override fun onSuccess() {
+                _status.value = "Scanning for Wi-Fi P2P peers…"
+                result.complete(true)
+            }
             override fun onFailure(reason: Int) {
-                _status.value = "Wi-Fi P2P discovery failed: ${reasonText(reason)}"
+                _status.value = "Wi-Fi P2P discovery retry: ${reasonText(reason)}"
+                result.complete(false)
             }
         })
+        result.await()
     }
 
     override suspend fun connectToDevice(node: Node): Result<Unit> = withContext(Dispatchers.IO) {
@@ -184,17 +226,29 @@ class WifiDirectCommunicationTransport(
         val address = node.id.trim()
         val p2p = manager ?: return@withContext Result.failure(IllegalStateException("Wi-Fi P2P unavailable"))
         val ch = channel ?: return@withContext Result.failure(IllegalStateException("Wi-Fi P2P channel unavailable"))
-        waiters[address]?.let { return@withContext await(address, it) }
+
+        val existingSocket = socketByDeviceAddress[address]
+        if (existingSocket != null && peersBySocket[existingSocket] != null) {
+            return@withContext Result.success(Unit)
+        }
+
+        val existingWaiter = waiters[address]
+        if (existingWaiter != null) return@withContext await(address, existingWaiter)
 
         val waiter = CompletableDeferred<Result<Unit>>()
         waiters[address] = waiter
+        pendingConnectionAddress = address
         _linkState.value = LinkState.CONNECTING
         _status.value = "Connecting to ${node.name} over Wi-Fi P2P…"
 
         val config = WifiP2pConfig().apply { deviceAddress = address }
         p2p.connect(ch, config, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() { _status.value = "Wi-Fi P2P connection requested" }
+            override fun onSuccess() {
+                _status.value = "Wi-Fi P2P connection requested • waiting for OffGrid handshake"
+                requestConnectionInfo()
+            }
             override fun onFailure(reason: Int) {
+                pendingConnectionAddress = null
                 waiters.remove(address)?.complete(
                     Result.failure(IllegalStateException("Wi-Fi P2P connect failed: ${reasonText(reason)}"))
                 )
@@ -204,23 +258,19 @@ class WifiDirectCommunicationTransport(
         await(address, waiter)
     }
 
-    private suspend fun await(
-        address: String,
-        waiter: CompletableDeferred<Result<Unit>>,
-    ): Result<Unit> = try {
+    private suspend fun await(address: String, waiter: CompletableDeferred<Result<Unit>>): Result<Unit> = try {
         withTimeout(CONNECT_TIMEOUT_MS.toLong()) { waiter.await() }
     } catch (t: Throwable) {
         waiters.remove(address)?.complete(Result.failure(t))
+        if (pendingConnectionAddress == address) pendingConnectionAddress = null
         Result.failure(t)
     }
 
-    override suspend fun sendMessage(message: Message): Result<Unit> = sendMutex.withLock {
+    override suspend fun sendMessage(message: Message): Result<Unit> = stateMutex.withLock {
         val destination = message.recipientNodeId ?: message.receiverId
         val nextHop = router.nextHop(destination, listOf(selfId)) ?: destination
-        val socketKey = logicalToSocket[nextHop]
-            ?: return@withLock Result.failure(IllegalStateException("No Wi-Fi P2P link to $nextHop"))
-        val writer = writers[socketKey]
-            ?: return@withLock Result.failure(IllegalStateException("No active Wi-Fi P2P socket"))
+        val connection = peersBySocket.values.firstOrNull { it.logicalId == nextHop }
+            ?: return@withLock Result.failure(IllegalStateException("No active Wi-Fi P2P link to $nextHop"))
 
         val plaintext = messageJson(message, destination).toString().toByteArray(Charsets.UTF_8)
         val packet = HopPacket(
@@ -237,26 +287,28 @@ class WifiDirectCommunicationTransport(
             path = listOf(selfId),
         )
 
-        val started = System.nanoTime()
-        runCatching {
-            writer.write(packet.toJson().toString(Charsets.UTF_8))
-            writer.newLine()
-            writer.flush()
-            updateDiagnostics(sent = true, latencyMs = (System.nanoTime() - started) / 1_000_000)
-            _status.value = "Wi-Fi P2P • AES-256-GCM • sent to ${nextHop.takeLast(4)}"
-        }.fold(
-            onSuccess = { Result.success(Unit) },
-            onFailure = { error ->
-                updateDiagnostics(failed = true)
-                Result.failure(error)
+        writePacket(connection, packet).fold(
+            onSuccess = {
+                _status.value = "Wi-Fi P2P • AES-256-GCM • sent to ${nextHop.takeLast(4)}"
+                Result.success(Unit)
             },
+            onFailure = { Result.failure(it) },
         )
     }
 
     override fun stop() {
-        sockets.values.forEach { runCatching { it.close() } }
-        sockets.clear()
-        writers.clear()
+        discoveryJob?.cancel()
+        discoveryJob = null
+        peersBySocket.values.forEach { runCatching { it.socket.close() } }
+        peersBySocket.clear()
+        socketByLogicalId.clear()
+        socketByDeviceAddress.clear()
+        writerLocks.clear()
+        seenPackets.clear()
+        processingPackets.clear()
+        waiters.values.forEach { it.cancel() }
+        waiters.clear()
+        pendingConnectionAddress = null
         runCatching { server?.close() }
         server = null
         if (registered) {
@@ -264,6 +316,7 @@ class WifiDirectCommunicationTransport(
             registered = false
         }
         runCatching { manager?.removeGroup(channel, null) }
+        _nodes.value = emptyList()
         _linkState.value = LinkState.OFFLINE
         _status.value = "Wi-Fi P2P stopped"
     }
@@ -295,22 +348,25 @@ class WifiDirectCommunicationTransport(
     }
 
     private fun publishPeers(devices: Collection<WifiP2pDevice>) {
-        _nodes.value = devices.map { device ->
-            val logicalId = peerIds[device.deviceAddress] ?: device.deviceAddress
-            logicalToSocket[logicalId] = device.deviceAddress
-            Node(
-                id = device.deviceAddress,
-                name = device.deviceName.ifBlank { "Wi-Fi P2P device" },
-                status = when (device.status) {
-                    WifiP2pDevice.CONNECTED -> NodeStatus.CONNECTED
-                    WifiP2pDevice.INVITED -> NodeStatus.CONNECTING
-                    else -> NodeStatus.AVAILABLE
-                },
-                hops = 1,
-                isSimulated = false,
-                logicalId = logicalId,
-            )
-        }.distinctBy { it.id }
+        _nodes.value = devices
+            .filter { it.deviceAddress.isNotBlank() }
+            .map { device ->
+                val connection = socketByDeviceAddress[device.deviceAddress]?.let { peersBySocket[it] }
+                val logicalId = connection?.logicalId ?: device.deviceAddress
+                Node(
+                    id = device.deviceAddress,
+                    name = connection?.name ?: device.deviceName.ifBlank { "Wi-Fi P2P device" },
+                    status = when {
+                        connection != null -> NodeStatus.CONNECTED
+                        device.status == WifiP2pDevice.INVITED -> NodeStatus.CONNECTING
+                        else -> NodeStatus.AVAILABLE
+                    },
+                    hops = router.routeTo(logicalId)?.distance ?: 1,
+                    isSimulated = false,
+                    logicalId = logicalId,
+                )
+            }
+            .distinctBy { it.id }
     }
 
     private fun startServer() {
@@ -318,8 +374,12 @@ class WifiDirectCommunicationTransport(
         scope.launch {
             runCatching {
                 ServerSocket(PORT).also { server = it }.use { listening ->
-                    while (!listening.isClosed) handleSocket(listening.accept())
+                    while (!listening.isClosed) {
+                        handleSocket(listening.accept(), null)
+                    }
                 }
+            }.onFailure {
+                _status.value = "Wi-Fi P2P server stopped: ${it.message ?: "socket error"}"
             }
         }
     }
@@ -329,33 +389,32 @@ class WifiDirectCommunicationTransport(
             runCatching {
                 val socket = Socket()
                 socket.connect(InetSocketAddress(host, PORT), CONNECT_TIMEOUT_MS)
-                handleSocket(socket)
-            }.onFailure { _status.value = "Wi-Fi P2P socket failed" }
+                handleSocket(socket, null)
+            }.onFailure {
+                _status.value = "Wi-Fi P2P data channel failed: ${it.message ?: "socket error"}"
+            }
         }
     }
 
-    private fun handleSocket(socket: Socket) {
+    private fun handleSocket(socket: Socket, deviceAddress: String?) {
         scope.launch {
-            val key = socket.remoteSocketAddress.toString()
+            val key = socket.remoteSocketAddress.toString() + "#" + System.nanoTime()
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
             val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
-            sockets[key] = socket
-            writers[key] = writer
-            updateDiagnostics(connection = true)
             sendHello(writer)
             try {
                 while (!socket.isClosed) {
                     val line = reader.readLine() ?: break
-                    if (line.toByteArray(Charsets.UTF_8).size > MAX_PACKET_BYTES) continue
+                    if (line.toByteArray(Charsets.UTF_8).size > MAX_PACKET_BYTES) {
+                        _status.value = "Wi-Fi P2P • oversized packet dropped"
+                        continue
+                    }
                     handleLine(key, line)
                 }
-            } catch (_: Throwable) {
-                // Connection teardown is handled in finally.
+            } catch (t: Throwable) {
+                _status.value = "Wi-Fi P2P link lost"
             } finally {
-                sockets.remove(key)
-                writers.remove(key)
-                peerIds.remove(key)
-                updateDiagnostics(disconnect = true)
+                removePeer(key)
                 runCatching { socket.close() }
             }
         }
@@ -377,74 +436,208 @@ class WifiDirectCommunicationTransport(
     private fun handleLine(socketKey: String, line: String) {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return
         when (json.optString("kind")) {
-            "OFFGRID_HELLO" -> {
-                val logicalId = json.optString("nodeId").takeIf { it.isNotBlank() } ?: return
-                peerIds[socketKey] = logicalId
-                logicalToSocket[logicalId] = socketKey
-                router.learnDirect(logicalId)
-                _status.value = "Wi-Fi P2P link ready • ${logicalId.takeLast(4)}"
-                waiters.entries.firstOrNull { it.key == logicalId }?.value?.complete(Result.success(Unit))
-            }
+            "OFFGRID_HELLO" -> handleHello(socketKey, json)
+            ROUTE_ANNOUNCEMENT -> handleRoutes(socketKey, json)
             HopPacket.KIND -> handleHopPacket(socketKey, line.toByteArray(Charsets.UTF_8))
         }
     }
 
+    private fun handleHello(socketKey: String, json: JSONObject) {
+        if (json.optString("protocol") != HELLO) return
+        val logicalId = json.optString("nodeId").takeIf { it.isNotBlank() } ?: return
+        if (logicalId == selfId) return
+
+        val socket = findSocket(socketKey) ?: return
+        val writer = findWriter(socketKey) ?: return
+        val name = json.optString("name").ifBlank { "OffGrid device" }
+        val peer = PeerConnection(socketKey, findDeviceAddress(logicalId), logicalId, name, socket, writer)
+
+        peersBySocket[socketKey]?.let { removePeer(it.socketKey) }
+        peersBySocket[socketKey] = peer
+        socketByLogicalId[logicalId] = socketKey
+        peer.deviceAddress?.let { socketByDeviceAddress[it] = socketKey }
+        router.learnDirect(logicalId)
+        _linkState.value = LinkState.CONNECTED
+        _status.value = "Wi-Fi P2P link ready • ${name.take(18)}"
+
+        pendingConnectionAddress?.let { address ->
+            if (peer.deviceAddress == null || address.equals(peer.deviceAddress, ignoreCase = true)) {
+                pendingConnectionAddress = null
+                waiters.remove(address)?.complete(Result.success(Unit))
+            }
+        }
+        waiters.remove(logicalId)?.complete(Result.success(Unit))
+        sendRoutesToPeer(peer)
+        announceRoutesToPeers()
+        publishPeers(_nodes.value.mapNotNull { current ->
+            if (current.id.equals(peer.deviceAddress, ignoreCase = true)) {
+                WifiP2pDevice().apply {
+                    deviceAddress = current.id
+                    deviceName = peer.name
+                    status = WifiP2pDevice.CONNECTED
+                }
+            } else null
+        })
+    }
+
+    private fun findDeviceAddress(logicalId: String): String? {
+        return _nodes.value.firstOrNull { it.logicalId == logicalId || it.id.equals(logicalId, ignoreCase = true) }?.id
+    }
+
+    private fun findSocket(socketKey: String): Socket? =
+        peersBySocket[socketKey]?.socket ?: pendingSockets[socketKey]
+
+    private fun findWriter(socketKey: String): BufferedWriter? =
+        peersBySocket[socketKey]?.writer ?: pendingWriters[socketKey]
+
+    private val pendingSockets = ConcurrentHashMap<String, Socket>()
+    private val pendingWriters = ConcurrentHashMap<String, BufferedWriter>()
+
+    private fun handleRoutes(socketKey: String, json: JSONObject) {
+        val peer = peersBySocket[socketKey] ?: return
+        val routes = json.optJSONArray("routes") ?: return
+        for (index in 0 until routes.length()) {
+            val route = routes.optJSONObject(index) ?: continue
+            val destination = route.optString("destination")
+            val nextHop = route.optString("nextHop", peer.logicalId)
+            val distance = route.optInt("distance", 1)
+            val pathJson = route.optJSONArray("path")
+            val path = buildList {
+                if (pathJson != null) for (i in 0 until pathJson.length()) add(pathJson.optString(i))
+            }
+            router.learn(destination, nextHop, distance, path)
+        }
+        publishPeers(_nodes.value)
+    }
+
+    private fun announceRoutesToPeers() {
+        peersBySocket.values.forEach { sendRoutesToPeer(it) }
+    }
+
+    private fun sendRoutesToPeer(peer: PeerConnection) {
+        val routes = JSONArray()
+        router.routes().forEach { route ->
+            routes.put(JSONObject().apply {
+                put("destination", route.destinationNodeId)
+                put("nextHop", route.nextHopNodeId)
+                put("distance", route.distance)
+                put("path", JSONArray(route.path))
+            })
+        }
+        val control = JSONObject().apply {
+            put("kind", ROUTE_ANNOUNCEMENT)
+            put("routes", routes)
+        }
+        writeLine(peer, control.toString())
+    }
+
     private fun handleHopPacket(socketKey: String, bytes: ByteArray) {
         val packet = HopPacket.fromJson(bytes) ?: return
-        if (!seenPackets.add(packet.messageId)) return
+        if (seenPackets.contains(packet.messageId) || !processingPackets.add(packet.messageId)) return
 
-        val previousHop = peerIds[socketKey] ?: packet.previousHopId
-        val plaintext = runCatching {
-            HopEncryption.decrypt(
-                packet.ciphertext,
-                HopEncryption.linkKey(previousHop, selfId),
+        try {
+            val peer = peersBySocket[socketKey] ?: return
+            val previousHop = peer.logicalId
+            val plaintext = runCatching {
+                HopEncryption.decrypt(
+                    packet.ciphertext,
+                    HopEncryption.linkKey(previousHop, selfId),
+                )
+            }.getOrElse {
+                _status.value = "Wi-Fi P2P • encrypted packet rejected"
+                return
+            }
+            updateDiagnostics(received = true)
+
+            if (packet.destinationNodeId == selfId) {
+                decodeAndEmit(plaintext, packet.hopCount + 1)
+                seenPackets.add(packet.messageId)
+                _status.value = "Wi-Fi P2P • delivered after ${packet.hopCount + 1} hop(s)"
+                return
+            }
+
+            if (packet.hopCount >= packet.maxHops || selfId in packet.path) {
+                seenPackets.add(packet.messageId)
+                _status.value = "Wi-Fi P2P • relay dropped: loop/hop limit"
+                return
+            }
+
+            val nextHop = router.nextHop(packet.destinationNodeId, packet.path + selfId)
+                ?: packet.destinationNodeId
+            val nextPeer = peersBySocket.values.firstOrNull { it.logicalId == nextHop }
+            if (nextPeer == null) {
+                _status.value = "Wi-Fi P2P • no route to ${packet.destinationNodeId.takeLast(4)}"
+                return
+            }
+
+            val forwarded = packet.copy(
+                previousHopId = selfId,
+                hopCount = packet.hopCount + 1,
+                path = packet.path + selfId,
+                ciphertext = HopEncryption.encrypt(
+                    plaintext,
+                    HopEncryption.linkKey(selfId, nextHop),
+                ),
             )
-        }.getOrElse {
-            _status.value = "Wi-Fi P2P • encrypted packet rejected"
+
+            if (writePacket(nextPeer, forwarded).isSuccess) {
+                seenPackets.add(packet.messageId)
+                _status.value = "RELAYING • Wi-Fi P2P • ${selfId.takeLast(4)} → ${nextHop.takeLast(4)}"
+            }
+        } finally {
+            processingPackets.remove(packet.messageId)
+        }
+    }
+
+    private suspend fun writePacket(peer: PeerConnection, packet: HopPacket): Result<Unit> =
+        writeLine(peer, packet.toJson().toString(Charsets.UTF_8), countPacket = true)
+
+    private suspend fun writeLine(
+        peer: PeerConnection,
+        line: String,
+        countPacket: Boolean = false,
+    ): Result<Unit> {
+        val lock = writerLocks.computeIfAbsent(peer.socketKey) { Mutex() }
+        return lock.withLock {
+            val started = System.nanoTime()
+            runCatching {
+                peer.writer.write(line)
+                peer.writer.newLine()
+                peer.writer.flush()
+                if (countPacket) {
+                    updateDiagnostics(sent = true, latencyMs = (System.nanoTime() - started) / 1_000_000)
+                }
+            }.fold(
+                onSuccess = { Result.success(Unit) },
+                onFailure = { error ->
+                    if (countPacket) updateDiagnostics(failed = true)
+                    removePeer(peer.socketKey)
+                    Result.failure(error)
+                },
+            )
+        }
+    }
+
+    private fun removePeer(socketKey: String) {
+        val peer = peersBySocket.remove(socketKey) ?: run {
+            pendingSockets.remove(socketKey)
+            pendingWriters.remove(socketKey)
             return
         }
-        updateDiagnostics(received = true)
-
-        if (packet.destinationNodeId == selfId) {
-            decodeAndEmit(plaintext, packet.hopCount + 1)
-            _status.value = "Wi-Fi P2P • delivered after ${packet.hopCount + 1} hop(s)"
-            return
+        if (socketByLogicalId[peer.logicalId] == socketKey) socketByLogicalId.remove(peer.logicalId)
+        peer.deviceAddress?.let {
+            if (socketByDeviceAddress[it] == socketKey) socketByDeviceAddress.remove(it)
         }
-
-        if (packet.hopCount >= packet.maxHops || selfId in packet.path) {
-            _status.value = "Wi-Fi P2P • relay dropped: loop/hop limit"
-            return
-        }
-
-        val nextHop = router.nextHop(packet.destinationNodeId, packet.path + selfId)
-            ?: packet.destinationNodeId
-        val nextSocket = logicalToSocket[nextHop]
-        val nextWriter = nextSocket?.let { writers[it] }
-        if (nextWriter == null) {
-            _status.value = "Wi-Fi P2P • no route to ${packet.destinationNodeId.takeLast(4)}"
-            return
-        }
-
-        val forwarded = packet.copy(
-            previousHopId = selfId,
-            hopCount = packet.hopCount + 1,
-            path = packet.path + selfId,
-            ciphertext = HopEncryption.encrypt(
-                plaintext,
-                HopEncryption.linkKey(selfId, nextHop),
-            ),
-        )
-
-        runCatching {
-            nextWriter.write(forwarded.toJson().toString(Charsets.UTF_8))
-            nextWriter.newLine()
-            nextWriter.flush()
-            _status.value = "RELAYING • Wi-Fi P2P • ${selfId.takeLast(4)} → ${nextHop.takeLast(4)}"
-        }.onFailure { updateDiagnostics(failed = true) }
+        writerLocks.remove(socketKey)
+        router.clearPeer(peer.logicalId)
+        updateDiagnostics(disconnect = true)
+        publishPeers(_nodes.value)
+        announceRoutesToPeers()
     }
 
     private fun decodeAndEmit(bytes: ByteArray, hopCount: Int) {
         val json = runCatching { JSONObject(bytes.toString(Charsets.UTF_8)) }.getOrNull() ?: return
+        if (json.optString("kind") != "OFFGRID_MESSAGE") return
         val senderId = json.optString("senderId")
         val receiverId = json.optString("receiverId")
         val type = runCatching {
@@ -491,9 +684,7 @@ class WifiDirectCommunicationTransport(
     }
 
     private fun requirePermission() {
-        if (!hasPermission()) {
-            throw SecurityException("Required Wi-Fi P2P permission is not granted")
-        }
+        if (!hasPermission()) throw SecurityException("Required Wi-Fi P2P permission is not granted")
     }
 
     private fun reasonText(reason: Int): String = when (reason) {
