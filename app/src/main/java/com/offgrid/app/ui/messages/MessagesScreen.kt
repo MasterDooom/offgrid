@@ -6,13 +6,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -29,6 +34,12 @@ import com.offgrid.app.data.model.Conversation
 import com.offgrid.app.data.model.Node
 import com.offgrid.app.data.model.NodeStatus
 
+private val Navy = androidx.compose.ui.graphics.Color(0xFF10213A)
+private val Blue = androidx.compose.ui.graphics.Color(0xFF1769FF)
+private val Green = androidx.compose.ui.graphics.Color(0xFF08A66A)
+private val SoftGreen = androidx.compose.ui.graphics.Color(0xFFDDF7EC)
+private val SoftBlue = androidx.compose.ui.graphics.Color(0xFFE8F0FF)
+
 @Composable
 fun MessagesScreen(
     conversations: Map<String, Conversation>,
@@ -36,81 +47,82 @@ fun MessagesScreen(
     onHome: () -> Unit,
     onNetwork: () -> Unit,
 ) {
-    val recent = conversations.values
-        .filter { it.lastMessage != null }
-        .sortedByDescending { it.lastMessage!!.timestamp }
-
+    val recent = conversations.values.filter { it.lastMessage != null }.sortedByDescending { it.lastMessage!!.timestamp }
     Scaffold(
-        bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                NavigationBarItem(false, onClick = onHome, icon = { Text("⌂") }, label = { Text("Home") })
-                NavigationBarItem(true, onClick = {}, icon = { Text("□") }, label = { Text("Messages") })
-                NavigationBarItem(false, onClick = onNetwork, icon = { Text("⌘") }, label = { Text("Network") })
-            }
+        containerColor = MaterialTheme.colorScheme.background,
+        bottomBar = { BottomBar(onHome, {}, onNetwork) },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { }, containerColor = Blue, contentColor = androidx.compose.ui.graphics.Color.White) { Text("✎", style = MaterialTheme.typography.titleLarge) }
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 10.dp)) {
-                Text("Messages", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("Direct. Private. Off the grid.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 10.dp, top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Messages", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Navy)
+                    Text("Direct. Private. Off the grid.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = {}) { Text("⌕", color = Navy, style = MaterialTheme.typography.headlineSmall) }
+                IconButton(onClick = {}) { Text("⋮", color = Navy, style = MaterialTheme.typography.titleLarge) }
             }
-
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                Text("All", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Tab("All", true)
+                Tab("Unread  2", false)
+                Tab("Groups", false)
+                Tab("SOS", false)
             }
-
             if (recent.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("No messages yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text("Start a conversation with a nearby OffGrid node.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                        Text("No messages yet", color = Navy, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                        Text("Start a conversation with a nearby OffGrid node.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
                     }
                 }
             } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    items(recent, key = { it.id }) { conversation ->
-                        ConversationRow(conversation) { onOpenConversation(conversation.peer) }
-                    }
+                LazyColumn(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                    items(recent, key = { it.id }) { conversation -> ConversationRow(conversation) { onOpenConversation(conversation.peer) } }
                 }
             }
         }
     }
 }
 
-@Composable
-private fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
+@Composable private fun Tab(label: String, selected: Boolean) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, color = if (selected) Blue else Navy, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.size(8.dp))
+        if (selected) Box(Modifier.size(width = 44.dp, height = 2.dp).padding(horizontal = 0.dp)) { Box(Modifier.fillMaxSize()) }
+    }
+}
+
+@Composable private fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
     val peer = conversation.peer
     val message = conversation.lastMessage
     val connected = peer.status == NodeStatus.CONNECTED
-
     Surface(Modifier.fillMaxWidth().clickable(onClick = onClick), color = MaterialTheme.colorScheme.surface) {
-        Row(Modifier.padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(Modifier.size(50.dp), CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = .10f)) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(peer.name.take(1).uppercase(), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                }
+        Row(Modifier.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(Modifier.size(50.dp), CircleShape, color = if (connected) SoftGreen else SoftBlue) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(peer.name.take(1).uppercase(), color = if (connected) Green else Blue, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
             }
             Column(Modifier.weight(1f).padding(start = 14.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(peer.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Text(formatTime(message?.timestamp ?: 0L), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(peer.name, color = Navy, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text(formatTime(message?.timestamp ?: 0L), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(message?.content.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    if (connected) Text("●", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 8.dp))
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(message?.content.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    if (connected) Text("●", color = Blue, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 8.dp))
                 }
             }
         }
     }
 }
 
-private fun formatTime(timestamp: Long): String {
-    if (timestamp <= 0L) return ""
-    return runCatching {
-        val format = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
-        format.format(java.util.Date(timestamp))
-    }.getOrDefault("")
+@Composable private fun BottomBar(onHome: () -> Unit, onMessages: () -> Unit, onNetwork: () -> Unit) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, modifier = Modifier.navigationBarsPadding()) {
+        NavigationBarItem(false, onHome, icon = { Text("⌂", color = Navy, style = MaterialTheme.typography.titleLarge) }, label = { Text("Home") })
+        NavigationBarItem(true, onMessages, icon = { Text("□", color = Blue, style = MaterialTheme.typography.titleLarge) }, label = { Text("Messages") })
+        NavigationBarItem(false, onNetwork, icon = { Text("⌘", color = Navy, style = MaterialTheme.typography.titleLarge) }, label = { Text("Network") })
+    }
 }
+
+private fun formatTime(timestamp: Long): String = if (timestamp <= 0L) "" else runCatching { java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(timestamp)) }.getOrDefault("")
