@@ -1,90 +1,110 @@
-# OFFGRID — MVP prototype
+# OFFGRID — offline mesh MVP
 
-Offline-first messaging with a nearby-device discovery layer and an Emergency SOS layer,
-inspired architecturally by [Meshtastic's Android app](https://meshtastic.org/docs/software/android/)
-but not a clone of it.
+OffGrid is an Android offline-first messaging prototype for situations where normal cellular infrastructure is unavailable.
 
-Flow: **Discover -> Select device -> Chat -> Send/Receive -> Emergency SOS**.
+Core flow: **Discover → Connect → Chat → Relay → Emergency SOS**.
 
-## Architecture
+## Current architecture
 
-```
-ui/            Compose screens: home, profile, chat, emergency, settings
-data/model/    Node, Message, Conversation, SOSAlert, NetworkStatus
-data/repository/  IdentityManager, MessagingRepository, EmergencyRepository
-data/transport/   CommunicationTransport (interface), MockCommunicationTransport (impl)
-legacy/wifidirect/  Milestone-1 Wi-Fi Direct + TCP transport, kept as a reference for real hardware
-```
-
-`CommunicationTransport` is the only thing the UI/repositories know about:
-
-```kotlin
-interface CommunicationTransport {
-    val discoveredNodes: StateFlow<List<Node>>
-    val linkState: StateFlow<LinkState>
-    val incomingMessages: Flow<Message>
-    suspend fun start(selfId: String, selfName: String)
-    suspend fun discoverDevices()
-    suspend fun connectToDevice(node: Node): Result<Unit>
-    suspend fun sendMessage(message: Message): Result<Unit>
-    fun stop()
-}
+```text
+Compose UI
+    ↓
+MessagingRepository / EmergencyRepository
+    ↓
+CommunicationTransport
+    ↓
+WifiDirectCommunicationTransport
+    ↓
+Android Wi-Fi Direct (P2P)
+    ↓
+TCP socket inside the P2P group
+    ↓
+HopPacket + HopRouter + AES-256-GCM hop encryption
 ```
 
-`MockCommunicationTransport` implements it today with a real TCP socket bridged between two
-emulator instances via `adb forward` (see below) -- it genuinely sends bytes between two running
-app processes, not a local-only fake. A few extra `Node`s are marked `isSimulated = true` purely
-to populate the Nearby list on a single emulator; messaging them gets a canned local reply,
-clearly not network traffic.
+`CommunicationTransport` is the stable seam between the UI/repositories and the physical transport. The app currently wires the real Wi-Fi Direct transport through `OffGridRuntime`.
 
-To move to real hardware later, implement `MeshtasticCommunicationTransport` against a Meshtastic
-radio (BLE/serial) -- no other file changes.
+### Identity
 
-The previous Wi-Fi Direct + TCP implementation (`legacy/wifidirect/`) is preserved as a reference:
-it's real Android Wi-Fi Direct code, but Wi-Fi Direct isn't available on emulators, which is why
-it isn't wired into the app by default anymore. `docs/MVP_DECISIONS.md` still documents that
-milestone's reasoning; it stays relevant background for the real-device follow-up.
+Every installation has a stable local OffGrid node ID and editable display name. Android Wi-Fi P2P device addresses are treated as transport/link identifiers only; conversations and routes use stable logical OffGrid IDs.
 
-## Run on one emulator
+### Messaging
 
-Open the project in Android Studio, run on any API 26+ emulator. You'll see your node ID, a
-simulated Nearby list (Aarav, Rahul, Emergency Relay), recent conversations, and the Emergency
-Mode entry point. Messaging a simulated node gets a canned reply so the chat UI is exercised
-end-to-end even solo.
+`MessagingRepository` owns conversation state and sends `Message` objects through `CommunicationTransport`. Incoming messages are canonicalized by the original sender so a relay or changing Android endpoint does not create a second conversation.
 
-## Run the real two-device demo
+### Routing
 
-1. Launch **two** emulator instances (Run configuration -> pick a second AVD, or launch a second
-   instance from Device Manager).
-2. Find each emulator's adb serial: `adb devices`.
-3. Forward each instance's listen port from the host so the other instance can reach it:
-   ```
-   adb -s <serial-of-device-A> forward tcp:8990 tcp:8990
-   adb -s <serial-of-device-B> forward tcp:8991 tcp:8991
-   ```
-4. In the app on Device A: tap the gear icon (top right) -> **This is Device A** -> Apply.
-   (Defaults to listen 8990 / peer 10.0.2.2:8991 already, so this just confirms it.)
-5. On Device B: gear -> **This is Device B** -> Apply (listen 8991 / peer 10.0.2.2:8990).
-6. On Device A, tap the **Linked Device** entry under Nearby -> Message. This dials the socket
-   and performs a small handshake, after which both devices show each other's real node ID/name.
-7. Send "Are you there?" from A -> appears in B's chat in real time. Reply from B -> appears on A.
-8. Go back to Home on either device, tap **Emergency Mode**, review the explainer text, then
-   **ACTIVATE SOS**. If the link is connected, the other device actually receives the SOS as an
-   emergency message; nodes-reached/helpers-found counters escalate to reflect the full roster
-   (real + simulated) for a visible demo. **CANCEL SOS** stops it.
+`HopRouter` maintains direct and learned routes. `HopPacket` carries the message ID, source, destination, hop count, path, and the encrypted payload. Relays deduplicate packets, reject loops, enforce a maximum hop count, and forward only after successful re-encryption and socket write.
 
-If `adb forward` isn't available (e.g. restricted environment), you can also run one instance in
-the emulator and a second real device on the same Wi-Fi network by setting peer host to that
-device's LAN IP address in the Demo Setup screen instead of `10.0.2.2`.
+### Encryption
 
-## What remains for real Meshtastic/BLE/mesh hardware
+Each physical hop uses AES-256-GCM with a fresh 96-bit IV and 128-bit authentication tag. The current prototype derives a deterministic per-link key from the two stable node IDs. This is **hop-by-hop encryption**, not end-to-end encryption: a relay must decrypt the current hop before forwarding it. A production deployment should replace the prototype key derivation with authenticated ECDH and key rotation.
 
-- Implement `MeshtasticCommunicationTransport : CommunicationTransport` against a Meshtastic
-  radio (BLE GATT or USB-serial), following Meshtastic's Android app patterns.
-- Multi-hop relay/TTL/dedup: `legacy/wifidirect/PacketForwarder.kt` already sketches the
-  dedup/TTL/route-avoidance logic that would need porting onto the new `Message` model.
-- Real permission/runtime handling for BLE (`BLUETOOTH_SCAN`/`CONNECT`/`ADVERTISE` on Android 12+)
-  the way `legacy/wifidirect/WifiDirectTransport.kt` handles `NEARBY_WIFI_DEVICES`.
-- Persistent message history (currently in-memory for the app session only).
-- Location-based SOS payloads, store-and-forward queuing, and priority-based delivery -- the
-  model layer (`SOSAlert.location`, `Message.type`) already leaves room for these.
+## Wi-Fi Direct transport
+
+`WifiDirectCommunicationTransport.kt` is a separate native transport. The previous Nearby transport remains in the repository and is not deleted or rewritten.
+
+The Wi-Fi transport handles:
+
+- Wi-Fi P2P peer discovery and connection
+- system Wi-Fi P2P broadcasts
+- stable OffGrid handshake over the P2P socket
+- group-owner server and group-client socket
+- route announcements and multi-hop relay
+- packet deduplication and loop/hop protection
+- the existing `HopPacket` and `HopEncryption` formats
+- live transport diagnostics
+- explicit scan/retry status
+
+The Network screen exposes the live transport status and current Android peer count so a hardware test can distinguish discovery failure from connection/handshake failure.
+
+**There is no fixed range claim.** Wi-Fi Direct can exceed Bluetooth range, but actual range depends on phone hardware, antennas, power settings, interference, walls, orientation, and the environment.
+
+## Permissions
+
+- Android 13+: `NEARBY_WIFI_DEVICES`
+- Android 12L and below: `ACCESS_FINE_LOCATION`
+- Wi-Fi state/change and network permissions required by Wi-Fi P2P/TCP
+- Foreground service permission for the background mesh service
+- notification permission on Android 13+
+
+Location Mode must be enabled for the Wi-Fi P2P discovery APIs used by the app.
+
+## Background mesh
+
+`OffGridNetworkService` runs the transport as a foreground service so discovery, receiving, and relay can continue while the UI is backgrounded or the screen is locked. Android still controls battery/background behavior, and a user force-stop or powered-off phone cannot relay messages.
+
+The foreground service notification is intentionally low priority; incoming normal messages and emergency messages use separate notifications.
+
+## Testing
+
+For the real Wi-Fi Direct test, use **two physical Android phones** with Wi-Fi enabled, Location Mode enabled, and the required OffGrid permissions granted. Keep both phones close together for the first connection test.
+
+1. Install the same current debug APK on both phones.
+2. Give each phone a different OffGrid display name in Settings.
+3. Open both apps and let Mesh Active start.
+4. On Home, use **Scan for nearby devices**.
+5. Open Network → Live transport and check the discovery status and Android peer count.
+6. Select the other device and connect.
+7. Send a normal message in both directions.
+8. For a relay test, use three phones and verify the relay device is running OffGrid with the mesh service active.
+
+`WifiRangeTest.kt` is an engineering helper for packet-acceptance testing. It does not invent a physical distance or RSSI value.
+
+## Important topology limitation
+
+Android Wi-Fi Direct normally forms a P2P group with a group owner and clients. This makes a local relay topology practical, but it is not an unrestricted phone-to-phone mesh radio. For city-scale or Vellore-to-Pune communication, OffGrid would need a bridge such as an Internet gateway or dedicated long-range radio infrastructure.
+
+## Build
+
+The project targets Java/Kotlin 17, Android SDK 35, and uses Gradle 8.7 with Android Gradle Plugin 8.6.1.
+
+```powershell
+.\gradlew assembleDebug
+```
+
+The debug APK is produced at:
+
+```text
+app\build\outputs\apk\debug\app-debug.apk
+```
