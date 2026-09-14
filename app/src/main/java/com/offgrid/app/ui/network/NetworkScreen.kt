@@ -71,6 +71,28 @@ fun NetworkScreen(
                 NetworkTab("List", false)
                 NetworkTab("Diagnostics", false)
             }
+
+            Surface(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 1.dp,
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Live transport", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        transportStatus.ifBlank { "Wi-Fi P2P waiting for diagnostics…" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Android peers: ${nodes.size}  •  OffGrid links: ${nodes.count { it.status == NodeStatus.CONNECTED }}  •  Max hops: ${nodes.maxOfOrNull { it.hops } ?: 0}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             NetworkMap(nodes, selfId, selfName, onSelectNode, Modifier.fillMaxWidth().size(330.dp).padding(horizontal = 20.dp))
             Surface(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp), tonalElevation = 1.dp) {
                 Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
