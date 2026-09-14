@@ -463,6 +463,7 @@ class WifiDirectCommunicationTransport(
                     lastSeen = System.currentTimeMillis(),
                     hops = router.routeTo(logicalId)?.distance ?: 1,
                     isSimulated = false,
+                    capabilities = setOf(DeviceCapability.MESSAGING),
                     logicalId = logicalId,
                 )
             }
@@ -618,15 +619,13 @@ class WifiDirectCommunicationTransport(
             }
 
             // A route received from peer B must use B as our next hop. Never copy B's own
-            // nextHop field; that would describe the route from B's perspective and can point
-            // at a node we are not directly connected to.
-            val path = (listOf(selfId) + advertisedPath).distinct()
-            if (selfId in advertisedPath || destination in path.dropLast(1)) continue
+            // nextHop field; that describes the route from B's perspective.
+            if (selfId in advertisedPath || destination in advertisedPath.dropLast(1)) continue
             router.learn(
                 destinationNodeId = destination,
                 nextHopNodeId = peer.logicalId,
                 distance = (advertisedDistance + 1).coerceAtMost(8),
-                path = path,
+                path = advertisedPath,
             )
         }
         refreshConnectedNodes()
