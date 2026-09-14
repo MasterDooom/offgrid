@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -29,7 +28,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.offgrid.app.data.model.Message
 import com.offgrid.app.data.model.MessageStatus
@@ -45,35 +43,23 @@ private val SoftBlue = Color(0xFFEAF1FF)
 private val Border = Color(0xFFE3E9F1)
 
 @Composable
-fun ChatScreen(
-    node: Node,
-    messages: List<Message>,
-    selfId: String,
-    canSend: Boolean,
-    onBack: () -> Unit,
-    onSend: (String) -> Unit,
-    transportStatus: String = "",
-) {
+fun ChatScreen(node: Node, messages: List<Message>, selfId: String, canSend: Boolean, onBack: () -> Unit, onSend: (String) -> Unit, transportStatus: String = "") {
     var draft by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
     val statusColor = if (canSend) Green else MaterialTheme.colorScheme.onSurfaceVariant
-
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 7.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Text("‹", color = Navy, style = MaterialTheme.typography.headlineMedium) }
-                Surface(Modifier.size(44.dp), CircleShape, color = SoftBlue) { BoxCenter { Text(node.name.take(1).uppercase(), color = Blue, fontWeight = FontWeight.ExtraBold) } }
-                Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                    Text(node.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = Navy)
-                    Row(verticalAlignment = Alignment.CenterVertically) { BoxDot(statusColor); Text(if (canSend) "Connected to mesh" else "Waiting for mesh route", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
-                Surface(RoundedCornerShape(50), color = MaterialTheme.colorScheme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, Border)) { IconButton(onClick = {}) { Text("⋮", color = Navy, style = MaterialTheme.typography.titleLarge) } }
+    Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 7.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Text("‹", color = Navy, style = MaterialTheme.typography.headlineMedium) }
+            Surface(modifier = Modifier.size(44.dp), shape = CircleShape, color = SoftBlue) { BoxCenter { Text(node.name.take(1).uppercase(), color = Blue, fontWeight = FontWeight.ExtraBold) } }
+            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                Text(node.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = Navy)
+                Row(verticalAlignment = Alignment.CenterVertically) { BoxDot(statusColor); Text(if (canSend) "Connected to mesh" else "Waiting for mesh route", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-        },
-    ) { padding ->
+            Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, Border)) { IconButton(onClick = {}) { Text("⋮", color = Navy, style = MaterialTheme.typography.titleLarge) } }
+        }
+    }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp), RoundedCornerShape(14.dp), color = SoftBlue, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD9E6FF))) {
+            Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp), shape = RoundedCornerShape(14.dp), color = SoftBlue, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD9E6FF))) {
                 Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("⌁", color = Blue, fontWeight = FontWeight.Bold)
                     Column(Modifier.padding(start = 9.dp)) {
@@ -85,14 +71,14 @@ fun ChatScreen(
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (messages.isEmpty()) {
                     Column(Modifier.fillMaxWidth().padding(top = 90.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Surface(Modifier.size(62.dp), CircleShape, color = SoftBlue) { BoxCenter { Text("✦", color = Blue, style = MaterialTheme.typography.titleLarge) } }
+                        Surface(modifier = Modifier.size(62.dp), shape = CircleShape, color = SoftBlue) { BoxCenter { Text("✦", color = Blue, style = MaterialTheme.typography.titleLarge) } }
                         Text("Start the conversation", Modifier.padding(top = 13.dp), color = Navy, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         Text("Your messages stay on the local mesh.", Modifier.padding(top = 5.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                     }
                 } else messages.forEach { MessageBubble(it, selfId) }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(value = draft, onValueChange = { draft = it }, Modifier.weight(1f), placeholder = { Text(if (canSend) "Write a message…" else "Waiting for connection…") }, enabled = canSend, maxLines = 4, shape = RoundedCornerShape(23.dp))
+                OutlinedTextField(value = draft, onValueChange = { draft = it }, modifier = Modifier.weight(1f), placeholder = { Text(if (canSend) "Write a message…" else "Waiting for connection…") }, enabled = canSend, maxLines = 4, shape = RoundedCornerShape(23.dp))
                 Surface(onClick = { val text = draft.trim(); if (text.isNotEmpty() && canSend) { draft = ""; onSend(text) } }, enabled = canSend && draft.isNotBlank(), shape = CircleShape, color = if (canSend && draft.isNotBlank()) Blue else MaterialTheme.colorScheme.surfaceVariant) {
                     Text("↑", Modifier.padding(horizontal = 16.dp, vertical = 13.dp), color = if (canSend && draft.isNotBlank()) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.ExtraBold)
                 }
@@ -107,7 +93,7 @@ fun ChatScreen(
 @Composable private fun MessageBubble(message: Message, selfId: String) {
     val fromMe = message.senderId == selfId
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromMe) Arrangement.End else Arrangement.Start) {
-        Surface(shape = if (fromMe) RoundedCornerShape(19.dp, 19.dp, 6.dp, 19.dp) else RoundedCornerShape(19.dp, 19.dp, 19.dp, 6.dp), color = if (fromMe) Blue else MaterialTheme.colorScheme.surface, contentColor = if (fromMe) Color.White else Navy, modifier = Modifier.widthIn(max = 315.dp), border = if (fromMe) null else androidx.compose.foundation.BorderStroke(1.dp, Border)) {
+        Surface(modifier = Modifier.widthIn(max = 315.dp), shape = if (fromMe) RoundedCornerShape(19.dp, 19.dp, 6.dp, 19.dp) else RoundedCornerShape(19.dp, 19.dp, 19.dp, 6.dp), color = if (fromMe) Blue else MaterialTheme.colorScheme.surface, contentColor = if (fromMe) Color.White else Navy, border = if (fromMe) null else androidx.compose.foundation.BorderStroke(1.dp, Border)) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 if (message.type == MessageType.EMERGENCY) Text("EMERGENCY", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.ExtraBold)
                 Text(message.content, style = MaterialTheme.typography.bodyMedium)
